@@ -1,0 +1,145 @@
+name: Milestone release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag on main
+        required: true
+        type: string
+concurrency:
+  group: central-vet-intake-production
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  gate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      sha: ${{ steps.target.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          git check-ref-format "refs/tags/$TAG"
+          git show-ref --verify --quiet "refs/tags/$TAG"
+          sha="$(git rev-parse --verify "refs/tags/$TAG^{commit}")"
+          git merge-base --is-ancestor "$sha" refs/remotes/origin/main
+          status="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=$sha&per_page=1" --jq '.workflow_runs[0].conclusion')"
+          test "$status" = success
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+  production:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 40
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      RELEASE_SHA: ${{ needs.gate.outputs.sha }}
+      REGION: asia-northeast3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - id: previous_pages
+        name: Capture current Pages production deployment
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/release-pages.mjs snapshot
+      - id: previous_run
+        name: Capture current Cloud Run traffic
+        run: |
+          set -euo pipefail
+          snapshot="$(gcloud run services list --region="$REGION" --project="$GCP_PROJECT_ID" --filter='metadata.name=intake-api' --format=json)"
+          previous="$(jq -r '[.[] | .status.traffic[]? | select(.percent > 0) | .revisionName+"="+(.percent|tostring)] | join(",")' <<<"$snapshot")"
+          echo "traffic=$previous" >> "$GITHUB_OUTPUT"
+      - id: run_deploy
+        run: bash cloud/deploy.sh "$GCP_PROJECT_ID"
+      - id: identity
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: id_token
+          id_token_audience: ${{ steps.run_deploy.outputs.service_url }}
+          create_credentials_file: false
+      - name: Test candidate Firestore and Storage lifecycle
+        env:
+          ID_TOKEN: ${{ steps.identity.outputs.id_token }}
+          CANDIDATE: ${{ steps.run_deploy.outputs.candidate_url }}
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 75 -X POST -H "Authorization: Bearer $ID_TOKEN" "$CANDIDATE/api/intake/storage-check" | jq -e '.ok == true and .firestore == true and .storage == true'
+      - name: Build and verify release assets
+        env:
+          INTAKE_API_ORIGIN: ${{ steps.run_deploy.outputs.service_url }}
+        run: npm run build:pages && node --test scripts/verify-pages.mjs
+      - id: promote
+        name: Route traffic to verified Cloud Run revision
+        env:
+          REVISION: ${{ steps.run_deploy.outputs.revision }}
+        run: gcloud run services update-traffic intake-api --project="$GCP_PROJECT_ID" --region="$REGION" --to-revisions="$REVISION=100" --quiet
+      - id: pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/release-pages.mjs deploy
+      - name: Verify live Pages and storage round trip
+        env:
+          DEPLOYMENT: ${{ steps.pages.outputs.deployment }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          ID_TOKEN: ${{ steps.identity.outputs.id_token }}
+        run: |
+          set -euo pipefail
+          node scripts/release-pages.mjs verify "$DEPLOYMENT"
+          curl -fsS --max-time 75 -X POST -H "Authorization: Bearer $ID_TOKEN" https://central-vet-intake.pages.dev/api/intake/storage-check | jq -e '.ok == true and .firestore == true and .storage == true'
+      - name: Restore previous Pages deployment on verification failure
+        if: failure() && steps.pages.outputs.deployment != ''
+        env:
+          PREVIOUS: ${{ steps.previous_pages.outputs.previous }}
+          DEPLOYMENT: ${{ steps.pages.outputs.deployment }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/release-pages.mjs rollback "$DEPLOYMENT" "$PREVIOUS"
+      - name: Restore previous Cloud Run traffic on verification failure
+        if: failure() && steps.promote.outcome != 'skipped' && steps.previous_run.outputs.traffic != ''
+        env:
+          TRAFFIC: ${{ steps.previous_run.outputs.traffic }}
+        run: gcloud run services update-traffic intake-api --project="$GCP_PROJECT_ID" --region="$REGION" --to-revisions="$TRAFFIC" --quiet
+      - name: Record release evidence
+        env:
+          TAG: ${{ inputs.tag }}
+          DEPLOYMENT: ${{ steps.pages.outputs.deployment }}
+          REVISION: ${{ steps.run_deploy.outputs.revision }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "Verified commit $RELEASE_SHA, Cloud Run revision $REVISION and Pages deployment $DEPLOYMENT. Passed the public page, favicon, Leo fixture and synthetic Firestore/Storage checks." > "$RUNNER_TEMP/release-notes"
+          if gh release view -- "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP/release-notes" --clobber
+          else
+            gh release create "$TAG" --verify-tag --notes-file "$RUNNER_TEMP/release-notes"
+          fi

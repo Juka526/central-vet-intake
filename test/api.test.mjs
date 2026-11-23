@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {createApplication} from '../server.mjs';
 import {fixture} from './fixture.mjs';
 let app,base,clock=Date.now();
-before(async()=>{app=createApplication({vetCode:'vet-test-only-2026',receptionCode:'front-test-only-2026',now:()=>clock});await new Promise(r=>app.server.listen(0,'127.0.0.1',r));base=`http://127.0.0.1:${app.server.address().port}`;});
-after(async()=>{await new Promise(r=>app.server.close(r));app.close();});
+before(async()=>{app=createApplication({vetCode:'vet-test-only-2026',receptionCode:'front-test-only-2026',now:()=>clock});await new Promise((resolve,reject)=>{app.server.once('error',reject);app.server.listen(0,'127.0.0.1',resolve);});base=`http://127.0.0.1:${app.server.address().port}`;});
+after(async()=>{if(app.server.listening)await new Promise(r=>app.server.close(r));app.close();});
 async function client(role){const c={cookie:'',csrf:''};c.call=async(path,method='GET',body,extra={})=>{const r=await fetch(base+path,{method,headers:{'Content-Type':'application/json',Cookie:c.cookie,'X-CSRF-Token':c.csrf,...extra},body:body===undefined?undefined:JSON.stringify(body)});const cookies=r.headers.get('set-cookie');if(cookies)c.cookie=cookies.split(';')[0];const data=r.headers.get('content-type')?.includes('json')?await r.json():await r.arrayBuffer();return {status:r.status,data,headers:r.headers};};let r=await c.call('/api/session');c.csrf=r.data.csrf;if(role){r=await c.call('/api/login','POST',{role,code:role==='vet'?'vet-test-only-2026':'front-test-only-2026'});assert.equal(r.status,200);c.csrf=r.data.csrf;}return c;}
 async function create(c,input=fixture()){const r=await c.call('/api/intakes','POST',input);assert.equal(r.status,201,JSON.stringify(r.data));return r.data.id;}
 async function detail(c,id){const r=await c.call(`/api/intakes/${id}`);assert.equal(r.status,200);return r.data;}

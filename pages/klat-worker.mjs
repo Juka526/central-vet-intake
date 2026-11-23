@@ -68,9 +68,32 @@ async function chat(request, env, room) {
   }
 }
 
+async function intake(request, env, path) {
+  if (path !== '/api/intake/storage-check') return json({ error: 'Unknown intake route' }, 404);
+  if (request.method !== 'POST') return json({ error: 'POST required' }, 405);
+  const target = env.INTAKE_API_ORIGIN || (typeof builtIntakeApiOrigin === 'string' && builtIntakeApiOrigin);
+  if (!target) return json({ error: 'Cloud Run is not configured' }, 503);
+  const auth = request.headers.get('Authorization');
+  if (!auth?.startsWith('Bearer ')) return json({ error: 'Cloud Run identity token required' }, 401);
+  try {
+    const origin = new URL(target);
+    if (origin.protocol !== 'https:' || !origin.hostname.endsWith('.run.app') || origin.origin !== target)
+      return json({ error: 'Invalid Cloud Run origin' }, 503);
+    const result = await fetch(origin.origin + path, {
+      method: 'POST', headers: { Authorization: auth }, redirect: 'manual',
+    });
+    if (result.status >= 300 && result.status < 400) return json({ error: 'Unexpected upstream redirect' }, 502);
+    return new Response(result.body, { status: result.status, headers: {
+      'Content-Type': result.headers.get('Content-Type') || 'application/json',
+      'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+    } });
+  } catch { return json({ error: 'Cloud Run unavailable' }, 502); }
+}
+
 export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
+    if (path.startsWith('/api/intake/')) return intake(request, env, path);
     if (path === '/api/klat/status' && request.method === 'GET') {
       // A fixed, synthetic lookup checks authentication without returning customer data.
       try {

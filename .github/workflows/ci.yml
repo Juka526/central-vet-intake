@@ -1,0 +1,38 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run check
+      - run: npm test
+      - run: node --test cloud/storage.test.mjs
+      - name: Verify storage lifecycle against Firestore and GCS emulators
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8080
+          STORAGE_EMULATOR_HOST: 127.0.0.1:4443
+        run: |
+          set -euo pipefail
+          docker run -d --name firestore -p 127.0.0.1:8080:8080 gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators gcloud emulators firestore start --quiet --project=demo-central-vet --host-port=0.0.0.0:8080
+          docker run -d --name storage -p 127.0.0.1:4443:4443 fsouza/fake-gcs-server:1.52.3 -scheme http -port 4443
+          for address in "$FIRESTORE_EMULATOR_HOST" "$STORAGE_EMULATOR_HOST"; do
+            curl -sS --retry 15 --retry-all-errors --retry-delay 2 --max-time 4 "http://$address/" >/dev/null
+          done
+          node cloud/emulator-check.mjs
+      - run: npm run build:pages
+      - run: node --test scripts/verify-pages.mjs
+      - name: Exercise the mobile Pages UI with Chrome
+        run: |
+          npm install --prefix "$RUNNER_TEMP/browser-test" --no-save --ignore-scripts playwright-core@1.55.0
+          CHROME_BIN="$(command -v google-chrome)" NODE_PATH="$RUNNER_TEMP/browser-test/node_modules" node scripts/verify-pages-ui.cjs
