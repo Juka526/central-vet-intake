@@ -27,7 +27,7 @@ jobs:
           docker run -d --name firestore -p 127.0.0.1:8080:8080 gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators gcloud emulators firestore start --quiet --project=demo-central-vet --host-port=0.0.0.0:8080
           docker run -d --name storage -p 127.0.0.1:4443:4443 fsouza/fake-gcs-server:1.52.3 -scheme http -port 4443
           for address in "$FIRESTORE_EMULATOR_HOST" "$STORAGE_EMULATOR_HOST"; do
-            curl -sS --retry 15 --retry-connrefused --retry-delay 2 --max-time 4 "http://$address/" >/dev/null
+            curl -sS --retry 15 --retry-all-errors --retry-delay 2 --max-time 4 "http://$address/" >/dev/null
           done
           node cloud/emulator-check.mjs
       - run: npm run build:pages
