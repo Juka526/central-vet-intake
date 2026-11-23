@@ -4,3 +4,10 @@ node_modules/
 .DS_Store
 
 dist/
+central-vet-intake-pages.zip
+.handoff/
+.env.*
+!.env.example
+.dev.vars*
+.wrangler/
+gha-creds-*.json

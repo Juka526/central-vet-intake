@@ -16,4 +16,4 @@ for (const name of ['index.html','favicon.svg','app.js','styles.css','lib/engine
   files['/' + name] = [type, await readFile(new URL(name, output), 'utf8')];
 }
 const worker = await readFile(new URL('../pages/klat-worker.mjs', import.meta.url), 'utf8');
-await writeFile(new URL('_worker.js', output), 'const files = ' + JSON.stringify(files) + ';\n' + worker);
+await writeFile(new URL('_worker.js', output), 'const builtIntakeApiOrigin = ' + JSON.stringify(process.env.INTAKE_API_ORIGIN || '') + ';\nconst files = ' + JSON.stringify(files) + ';\n' + worker);
