@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <title>센트럴 문진</title>
+  <path fill="#154b43" d="M17 0h14a15 15 0 0 1 15 15v18a15 15 0 0 1-15 15H6a4 4 0 0 1-4-4V15A15 15 0 0 1 17 0Z"/>
+  <svg x="9.5" y="9.5" width="29" height="29" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="8" cy="7" r="2"/>
+    <circle cx="16" cy="7" r="2"/>
+    <circle cx="4.5" cy="12" r="1.6"/>
+    <circle cx="19.5" cy="12" r="1.6"/>
+    <path d="M7 18c0-6 10-6 10 0 0 4-3 1-5 1s-5 3-5-1Z"/>
+  </svg>
+</svg>
