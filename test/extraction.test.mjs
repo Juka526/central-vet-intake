@@ -59,3 +59,29 @@ test('명시된 날짜, 숫자 횟수, 식욕 변화의 근거를 보존한다',
 test('횟수가 구토 명사 앞에 오는 원문도 연결한다', () => {
   assert.deepEqual(extractCandidates('오늘 2회 구토. 설사 3회.').vomitCount, grounded(2, '2회 구토'));
 });
+
+test('문진 안내 예시의 식사량 감소와 원문 근거를 반환한다', () => {
+  assert.deepEqual(extractCandidates('어제 저녁부터 두 번 토했어요. 밥도 평소보다 적게 먹고요.'), {
+    onset: grounded('어제 저녁', '어제 저녁부터'),
+    vomitCount: grounded(2, '두 번 토했어요'),
+    mealChange: grounded('밥도 평소보다 적게 먹고요', '밥도 평소보다 적게 먹고요')
+  });
+});
+
+test('산책 변화 시점 대신 명시된 첫 구토 시점을 연결한다', () => {
+  assert.deepEqual(extractCandidates('어제부터 산책을 줄였어요. 오늘 처음 토했어요.'), {
+    onset: grounded('오늘', '오늘 처음 토했어요'),
+    vomitCount: unknown,
+    mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('어제부터 산책을 줄였어요.').onset, unknown);
+  assert.deepEqual(extractCandidates('오늘 토했어요.').onset, unknown);
+});
+
+test('대안으로 제시한 횟수와 추측한 식사 변화는 미확인이다', () => {
+  assert.deepEqual(extractCandidates('구토는 2회 또는 3회였어요. 밥을 반만 먹었다고 추측해요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('두 번 혹은 세 번 토했어요.').vomitCount, unknown);
+  assert.deepEqual(extractCandidates('2 또는 3회 토했어요.').vomitCount, unknown);
+});
