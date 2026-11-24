@@ -312,3 +312,22 @@ test('식사 변화와 먹는 양을 추정치라고 밝히면 해당 근거만 
   }
   assert.equal(extractCandidates('밥을 반만 먹었어요. 식사 변화는 추정치가 아니에요.').mealChange.value, '밥을 반만 먹었어요');
 });
+
+test('횟수를 추측한 것이라고 밝히면 해당 값과 근거를 지운다', () => {
+  assert.deepEqual(extractCandidates('구토는 2회였어요. 횟수는 추측한 거예요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('어제 저녁부터 두 번 토했어요. 구토 횟수는 추측한 것이에요. 밥도 평소보다 적게 먹고요.'), {
+    onset: grounded('어제 저녁', '어제 저녁부터'),
+    vomitCount: unknown,
+    mealChange: grounded('밥도 평소보다 적게 먹고요', '밥도 평소보다 적게 먹고요')
+  });
+  assert.deepEqual(extractCandidates('구토는 2회였어요. 횟수는 추측한 게 아니에요.').vomitCount,
+    grounded(2, '구토는 2회'));
+});
+
+test('식사 변화라고 명시한 추정치는 값과 근거를 남기지 않는다', () => {
+  assert.deepEqual(extractCandidates('밥을 반만 먹었어요. 식사 변화는 추정치예요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+});
