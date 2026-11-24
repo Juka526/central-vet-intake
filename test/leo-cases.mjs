@@ -6,10 +6,10 @@ export const leoCases = [
   {
     id: 'negation',
     complaint: '어제 저녁부터 메스꺼워 보이고 밥을 절반만 먹어요. 오늘은 구토하지 않았고 숨쉬기 힘들어하는 모습은 없어요.',
-    answered: { onset: '어제 저녁부터', daily: '밥을 절반만 먹어요', vomit: '오늘은 구토하지 않았고' },
+    answered: { onset: '어제 저녁부터', daily: '밥을 절반만 먹어요', vomit: '오늘은 구토하지 않았고', breath: '숨쉬기 힘들어하는 모습은 없어요' },
     required: [...digestive.filter(id => id !== 'onset'), 'breath'],
     flag: 'breathing',
-    baseline: { repeated: ['daily', 'onset', 'vomit'], omitted: [] }
+    baseline: { repeated: ['breath', 'daily', 'onset', 'vomit'], omitted: [] }
   },
   {
     id: 'past',
@@ -37,6 +37,7 @@ export const leoCases = [
   {
     id: 'correction',
     original: '어제 저녁부터 두 번 토했어요. 사료는 평소의 절반만 먹었어요.',
+    originalAnswers: { course: '두 번. 이후 경과는 모름.', vomit: '두 번. 내용물과 피 여부는 모름.' },
     complaint: '어제 저녁부터 한 번 토했어요. 사료는 평소의 절반만 먹었어요.',
     answers: { course: '한 번. 이후 경과는 모름.', vomit: '한 번. 내용물과 피 여부는 모름.' },
     answered: { onset: '어제 저녁부터', course: '한 번 토했어요', daily: '사료는 평소의 절반만 먹었어요', vomit: '한 번 토했어요' },

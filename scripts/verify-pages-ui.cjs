@@ -31,7 +31,22 @@ async function run() {
     async function submit(risks = {}) {
       const names = await page.locator('.risk-list input[value="no"]').evaluateAll(items => items.map(el => el.name));
       assert.deepEqual(names, ['breathing', 'collapse', 'bleeding', 'toxin', 'urine', 'abdomen', 'heat', 'birth'].map(id => `risk-${id}`));
-      for (const name of names) await choose(`input[name="${name}"][value="${risks[name.slice(5)] ?? 'no'}"]`);
+      await action('next');
+      assert.equal(await page.locator(':focus').getAttribute('name'), 'risk-breathing');
+      const breathingYes = page.locator('input[name="risk-breathing"][value="yes"]');
+      const breathingNo = page.locator('input[name="risk-breathing"][value="no"]');
+      await breathingYes.press('Space');
+      await page.keyboard.press('ArrowRight');
+      assert.equal(await breathingNo.evaluate(el => el === document.activeElement && el.checked), true);
+      const details = page.locator('.review-details');
+      if (await details.evaluate(el => el.open)) {
+        await choose('input[name="risk-breathing"][value="yes"]');
+        assert.equal(await details.evaluate(el => el.open), true);
+        await choose('input[name="risk-breathing"][value="no"]');
+      }
+      for (const name of names.slice(1)) await choose(`input[name="${name}"][value="${risks[name.slice(5)] ?? 'no'}"]`);
+      await action('next');
+      assert.equal(await page.locator(':focus').getAttribute('id'), 'final-confirm');
       await choose('#final-confirm');
       await action('next');
       await page.locator('.receipt').waitFor();
@@ -41,16 +56,25 @@ async function run() {
       await page.locator('#role').selectOption('vet');
       await page.locator('#login-form [type="submit"]').click();
       await page.locator('[data-open]').first().click();
+      assert.equal(await page.locator('#review-panel h2').evaluate(el => el === document.activeElement), true);
     }
 
     await startLeo();
+    await action('next');
+    assert.equal(await page.locator(':focus').getAttribute('id'), 'complaint');
     await action('sample-complaint');
     await action('next');
     await action('sample-answers');
     await action('next');
     await submit();
     await openReview();
+    await action('close-review');
+    assert.equal(await page.locator(':focus').getAttribute('data-open'), await page.locator('[data-open]').first().getAttribute('data-open'));
+    await page.keyboard.press('Enter');
     assert.match(await page.locator('#review-hpi').inputValue(), /레오 \/ 강아지/);
+    await page.locator('[data-doc="soapS"]').click();
+    assert.equal(await page.locator('[data-doc="soapS"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('[data-doc="hpi"]').getAttribute('aria-pressed'), 'false');
     await choose('#source-confirmed');
     if (await page.locator('#risk-confirmed').count()) await choose('#risk-confirmed');
     await action('approve');
@@ -67,9 +91,12 @@ async function run() {
       await action('next');
       if (scenario.original) {
         assert.equal(await page.locator('.quote-box p').textContent(), scenario.original);
-        await action('back');
+        for (const [id, answer] of Object.entries(scenario.originalAnswers)) await page.locator(`#q-${id}`).fill(answer);
+        await page.getByRole('button', { name: '증상 설명 수정' }).click();
         await page.locator('#complaint').fill(scenario.complaint);
         await action('next');
+        assert.match(await page.locator('#answer-recovery').textContent(), /관련 답변도 수정/);
+        for (const [id, answer] of Object.entries(scenario.originalAnswers)) assert.equal(await page.locator(`#q-${id}`).inputValue(), answer);
       }
       const fields = page.locator('textarea[data-answer]');
       await fields.first().waitFor();
@@ -79,9 +106,20 @@ async function run() {
         await page.locator(`#q-${id}`).fill(scenario.answers?.[id] ?? '모름');
       }
       await action('next');
+      if (scenario.original) {
+        await page.locator('.review-details summary').click();
+        const summary = await page.locator('.review-details').textContent();
+        assert.ok(summary.includes(scenario.complaint));
+        assert.doesNotMatch(summary, /두 번/);
+      }
       await submit(scenario.risks);
       await openReview();
       assert.equal(await page.locator('.source-text').textContent(), scenario.complaint);
+      if (scenario.original) {
+        const original = await page.locator('.source-pane').textContent();
+        assert.doesNotMatch(original, /두 번/);
+        for (const answer of Object.values(scenario.answers)) assert.ok(original.includes(answer));
+      }
       for (const id of ['review-hpi', 'review-soapS']) {
         const draft = await page.locator(`#${id}`).inputValue();
         assert.ok(draft.includes(scenario.complaint), scenario.id);
