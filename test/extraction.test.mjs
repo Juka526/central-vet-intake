@@ -259,3 +259,28 @@ test('철회된 후보 대신 별도로 명시된 정정값의 원문을 반환�
     }, complaint);
   }
 });
+
+test('확인하지 못한 시작 시점과 추측한 횟수·식사 변화는 미확인이다', () => {
+  const complaint = '어제부터 구토한 게 맞는지 아직 확인 못 했어요. 구토는 대충 2회 했어요. 밥을 반만 먹은 게 아닐까요.';
+  assert.deepEqual(extractCandidates(complaint), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+});
+
+test('별도 문장의 아마요는 바로 앞 관찰에만 적용한다', () => {
+  const complaint = '어제부터 구토했어요. 두 번 토했어요. 아마요.';
+  assert.deepEqual(extractCandidates(complaint), {
+    onset: grounded('어제', '어제부터'), vomitCount: unknown, mealChange: unknown
+  });
+});
+
+test('언제 시작됐는지 명시한 문장에서 시작 시점과 원문을 연결한다', () => {
+  const complaint = '어제 아침에 시작됐어요. 세 번 토했고 밥을 평소보다 적게 먹었어요.';
+  assert.deepEqual(extractCandidates(complaint), {
+    onset: grounded('어제 아침', '어제 아침에 시작됐어요'),
+    vomitCount: grounded(3, '세 번 토했고'),
+    mealChange: grounded('밥을 평소보다 적게 먹었어요', '밥을 평소보다 적게 먹었어요')
+  });
+  assert.deepEqual(extractCandidates('어제 아침에 시작됐는지 확인 중이에요.').onset, unknown);
+  assert.deepEqual(extractCandidates('어제 아침에 시작됐어요. 아마요.').onset, unknown);
+});
