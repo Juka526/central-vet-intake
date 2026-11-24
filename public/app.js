@@ -102,9 +102,13 @@ function liveRisk(answers=form.answers){const flags=assess(form.complaint,answer
 function followup() {
   const slots = intakeQuestions(form);
   const proposed = slots.filter(slot => !slot.answer && slot.candidate);
-  const candidates = proposed.some(slot => slot.required) ? proposed : [];
+  const needsClarification = slot => !slot.answer && form.clarifying?.includes(slot.id);
+  const requiredClarification = slots.find(slot => slot.required && needsClarification(slot));
+  const candidates = !requiredClarification && proposed.some(slot => slot.required) ? proposed : [];
   const pending = slots.filter(slot => !slot.answer && (!slot.required || !slot.candidate));
-  const current = pending.find(slot => slot.required) ?? pending.find(slot => slot.id === form.optionalQuestion);
+  const current = requiredClarification ?? pending.find(slot => slot.required)
+    ?? slots.find(needsClarification) ?? pending.find(slot => slot.id === form.optionalQuestion);
+  const clarifying = current && needsClarification(current);
   const optional = pending.filter(slot => !slot.required);
   const answered = slots.filter(slot => slot.answer);
   return `<div class="section-heading"><h1 tabindex="-1">조금만 더 알려 주세요.</h1></div>
@@ -116,8 +120,8 @@ function followup() {
         <input id="candidate-${slot.id}" data-candidate="${slot.id}" maxlength="1200" value="${esc(slot.candidate.value)}"></div>`).join('')}
       <button class="secondary" data-action="confirm-candidates">후보 값 확인</button></section>` :
       current ? `<div class="question"><label for="q-${current.id}">${esc(current.label)}</label>
-        <small>${current.candidate && form.clarifying !== current.id ? `원문 <q>${esc(current.candidate.evidence)}</q>` : form.clarifying === current.id ? clarification(current) : '모르면 “모르겠어요”, 해당하지 않으면 “없어요”로 답해 주세요.'}</small>
-        <textarea id="q-${current.id}" data-current="${current.id}" rows="2" maxlength="1200">${form.clarifying === current.id ? '' : esc(current.candidate?.value ?? '')}</textarea>
+        <small>${current.candidate && !clarifying ? `원문 <q>${esc(current.candidate.evidence)}</q>` : clarifying ? clarification(current) : '모르면 “모르겠어요”, 해당하지 않으면 “없어요”로 답해 주세요.'}</small>
+        <textarea id="q-${current.id}" data-current="${current.id}" rows="2" maxlength="1200">${clarifying ? '' : esc(current.candidate?.value ?? '')}</textarea>
         <div class="button-row"><button class="secondary" data-action="save-answer">답변 확인</button>
         <button class="text-btn" data-action="unknown-answer">모르겠어요</button></div></div>` : '<p>필수 질문을 확인했어요. 위험 징후 확인으로 넘어갈 수 있어요.</p>'}
     ${answered.length ? `<details><summary>확인한 답변 수정</summary>
@@ -216,11 +220,12 @@ async function next(){
       previous[slot.id] === (slot.candidate?.value ?? '')).map(slot => slot.id));
     form.answers = Object.fromEntries(Object.entries(form.answers).filter(([id]) => allowed.has(id)));
     form.corrections = form.corrections.filter(id => allowed.has(id));
+    form.clarifying = (form.clarifying ?? []).filter(id => allowed.has(id));
     form.reviewedSource = Object.fromEntries(slots.map(slot => [slot.id,slot.candidate?.value ?? '']));
   }
   if(step===2){
     const slots = intakeQuestions(form);
-    if(slots.some(slot => slot.required && slot.candidate && !slot.answer)){
+    if($('[data-action="confirm-candidates"]')){
       $('[data-action="confirm-candidates"]').focus();
       throw new Error('답변 후보를 확인해 주세요.');
     }
@@ -297,13 +302,19 @@ $('#app').addEventListener('click',async e=>{
     if(action==='sample-complaint'){form.complaint='어제 저녁부터 두 번 토했어요. 오늘 아침 사료를 절반 정도 먹었고 평소보다 기운이 조금 없어요.';render();}
     if(action==='confirm-candidates'||action==='save-edits'){
       const attribute = action==='confirm-candidates' ? 'candidate' : 'edit';
-      const optional = new Set(intakeQuestions(form).filter(slot => !slot.required).map(slot => slot.id));
+      const slots = new Map(intakeQuestions(form).map(slot => [slot.id,slot]));
+      form.clarifying ??= [];
       for(const field of document.querySelectorAll('[data-'+attribute+']')){
         const id = field.dataset[attribute];
-        if(attribute==='candidate' && optional.has(id) && !field.value.trim()) continue;
-        const value = field.value.trim() || '모르겠어요';
-        if(attribute==='edit' && form.answers[id]!==value && !form.corrections.includes(id)) form.corrections.push(id);
-        form.answers[id] = value;
+        const slot = slots.get(id);
+        if(attribute==='edit' && field.value.trim()===slot.answer) continue;
+        if(attribute==='candidate' && !slot.required && !field.value.trim()) continue;
+        const result = resolveQuestionAnswer(field.value.trim() || '모르겠어요',false,false,slot);
+        if(attribute==='edit' && !form.corrections.includes(id)) form.corrections.push(id);
+        if(result.clarify){
+          delete form.answers[id];
+          if(!form.clarifying.includes(id)) form.clarifying.push(id);
+        }else form.answers[id] = result.answer;
       }
       render();top();
     }
@@ -311,13 +322,17 @@ $('#app').addEventListener('click',async e=>{
       const field = $('[data-current]');
       const id = field.dataset.current;
       if(action==='save-answer' && !field.value.trim()){field.focus();throw new Error('답변을 입력해 주세요.');}
-      const result = resolveQuestionAnswer(field.value,form.clarifying===id,action==='unknown-answer');
-      form.clarifying = result.clarify ? id : null;
+      const slot = intakeQuestions(form).find(slot => slot.id === id);
+      form.clarifying ??= [];
+      const result = resolveQuestionAnswer(field.value,form.clarifying.includes(id),action==='unknown-answer',slot);
+      form.clarifying = form.clarifying.filter(item => item !== id);
+      if(result.clarify) form.clarifying.unshift(id);
       if(!result.clarify){form.answers[id] = result.answer;form.optionalQuestion=null;}
       render();
       if(result.clarify) $('[data-current]').focus();else top();
     }
     if(action==='sample-answers'){
+      form.clarifying = [];
       for(const slot of intakeQuestions(form)){
         if(!slot.answer && (slot.required || slot.candidate)) form.answers[slot.id]=slot.candidate?.value ?? '모름';
       }

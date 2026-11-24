@@ -223,7 +223,7 @@ test('악화 시점과 처음 구토한 시점을 따로 확인한다', () => {
   const slots = intakeQuestions(intake('어제 두 번 구토했어요. 오늘부터 구토가 심해졌어요.'));
   assert.equal(slots.find(slot => slot.id === 'vomit-onset').candidate, null);
   assert.ok(slots.some(slot => slot.label === '구토 관찰 시점 · 어제' && slot.candidate.value === '어제'));
-  assert.ok(slots.some(slot => slot.label.includes('경과 · 오늘') && slot.candidate.value === '심해졌어요'));
+  assert.ok(slots.some(slot => slot.label.startsWith('오늘 구토 경과') && slot.candidate.value === '심해졌어요'));
   assert.ok(!slots.some(slot => slot.label === '오늘 몇 번 토했나요?'));
 });
 
@@ -232,4 +232,97 @@ test('과거 위험 표현과 현재 메스꺼움 시작 시점을 따로 확인
   assert.equal(intakeQuestions(input).find(slot => slot.id.endsWith('-onset')).answer, '오늘 아침');
   assert.deepEqual(remaining(input).map(slot => slot.id), ['meal']);
   assert.ok(draft(input).flags.some(flag => flag.id === 'collapse' && flag.level === 'candidate'));
+});
+
+test('복합 증상 절에서도 날짜별 필수 횟수 누락을 Pages 접수에서 거부한다', () => {
+  const input = confirm(intake('어제 두 번 토했어요. 오늘 아침에 다시 토했는데 기침도 했어요. 사료를 절반만 먹었어요.'));
+  const pending = remaining(input);
+  assert.deepEqual(pending.map(slot => slot.label).sort(), [
+    '오늘 아침 몇 번 토했나요?', '이번에 기침이 몇 번 있었나요?', '기침의 첫 증상은 언제였나요?', '처음 토한 때가 언제였나요?',
+  ].sort());
+  assert.ok(intakeQuestions(input).some(slot => slot.label === '어제 몇 번 토했나요?' && slot.answer === '2회'));
+  const today = pending.find(slot => slot.label === '오늘 아침 몇 번 토했나요?');
+  for (const slot of pending) if (slot !== today) input.answers[slot.id] = '모르겠어요';
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[today.id] = '모르겠어요';
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+});
+
+test('불명확한 횟수 정정은 한 번 재확인하고 접수 검증에서도 확정을 막는다', () => {
+  const input = confirm(intake(short));
+  const slot = intakeQuestions(input).find(slot => slot.id === 'vomit-count');
+  for (const value of ['두세 번','서너 회','최소 두 번','2회 정도','2~3회','많이']) {
+    assert.deepEqual(resolveQuestionAnswer(value,false,false,slot), {answer:'',clarify:true}, value);
+    assert.deepEqual(resolveQuestionAnswer(value,true,false,slot), {answer:'모르겠어요',clarify:false}, value);
+    input.answers[slot.id] = value;
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/, value);
+  }
+  const answer = resolveQuestionAnswer('세 번 토했어요',true,false,slot);
+  assert.deepEqual(answer, {answer:'세 번 토했어요',clarify:false});
+  input.answers[slot.id] = answer.answer;
+  assert.equal(validateIntake(input),null);
+  assert.match(draft(input).hpi,/세 번 토했어요 \(보호자 정정\)/);
+  input.answers[slot.id] = resolveQuestionAnswer('두세 번',true,false,slot).answer;
+  assert.equal(validateIntake(input),null);
+  assert.ok(draft(input).missing.includes(slot.label));
+});
+
+test('재진의 별도 날짜 경과 문장을 직전 단일 증상과 연결한다', () => {
+  const input = confirm(intake('어제부터 구토했어요. 오늘 두 번 토했어요. 오늘은 좋아졌어요.',{visitType:'return'}));
+  const course = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-course'));
+  assert.deepEqual(course.map(slot => [slot.label,slot.answer,slot.required]), [
+    ['오늘 구토 경과는 어떻게 달라졌나요?', '좋아졌어요', true],
+  ]);
+  assert.ok(!remaining(input).some(slot => slot.id.startsWith('vomit-course')));
+  const mixed = intake('구토와 기침이 있었어요. 오늘은 좋아졌어요.',{visitType:'return'});
+  assert.ok(intakeQuestions(mixed).filter(slot => slot.id.endsWith('-course')).every(slot => !slot.candidate));
+});
+
+// These expectations are annotated from the Leo stories and the #5 question policy.
+const leoRequiredSlots = {
+  negation: { candidates: ['digestive-onset','meal'], pending: [] },
+  past: { candidates: ['digestive-onset'], pending: ['meal'] },
+  unknown: { candidates: [], pending: ['vomit-onset','vomit-count','meal'] },
+  multiple: {
+    candidates: ['vomit-onset','vomit-count','urine-amount','limb-walking'],
+    pending: ['cough-onset','오늘 아침 기침이 몇 번 있었나요?','urine-onset','urine-frequency','limb-onset','limb-location','meal'],
+  },
+  correction: { candidates: ['vomit-onset','vomit-count','meal'], pending: [] },
+  return: {
+    candidates: ['vomit-onset','vomit-count','meds','followup'],
+    pending: ['vomit-course','meal','history'],
+  },
+};
+const directRisks = ['breathing','collapse','bleeding','toxin','urine','abdomen','heat','birth'];
+
+test('레오 기준선 6개 사례에서 고정된 필수 하위 질문과 직접 위험 확인을 검사한다', async t => {
+  assert.deepEqual(RISKS.map(risk => risk.id).sort(), [...directRisks].sort());
+  for (const scenario of leoCases) {
+    await t.test(scenario.id, () => {
+      const { candidates, pending } = leoRequiredSlots[scenario.id];
+      const input = intake(scenario.original ?? scenario.complaint, {visitType:scenario.visitType ?? 'first'});
+      const slots = intakeQuestions(input);
+      const key = slot => slot.id.startsWith('cough-count-') ? slot.label : slot.id;
+      assert.deepEqual(slots.filter(slot => slot.required && slot.candidate).map(key).sort(), [...candidates].sort());
+      assert.deepEqual(remaining(confirm(input)).map(key).sort(), [...pending].sort());
+      if (scenario.id === 'correction') input.answers['vomit-count'] = '1회';
+      for (const id of pending) {
+        const slot = slots.find(slot => key(slot) === id);
+        input.answers[slot.id] = '모르겠어요';
+      }
+      assert.deepEqual(remaining(input), []);
+      assert.equal(validateIntake(input), null);
+      for (const id of [...candidates,...pending]) {
+        const answers = {...input.answers};
+        delete answers[slots.find(slot => key(slot) === id).id];
+        assert.match(validateIntake({...input,answers}), /후속 질문/, id);
+      }
+      for (const id of directRisks) {
+        const risks = {...input.risks};
+        delete risks[id];
+        assert.match(validateIntake({...input,risks}), /위험 징후/, id);
+      }
+      if (scenario.id === 'correction') assert.match(draft(input).hpi,/1회 \(보호자 정정\)/);
+    });
+  }
 });
