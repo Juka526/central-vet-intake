@@ -101,22 +101,23 @@ function complaint(){return `<div class="section-heading"><span class="eyebrow">
 function liveRisk(answers=form.answers){const flags=assess(form.complaint,answers,form.risks);return flags.length?`<div class="risk-banner" role="alert">${icon('alert')}<div><b>확인이 필요한 위험 징후 표현이 있어요.</b><p>${flags.map(f=>esc(f.label)).join(' · ')}</p><small>키워드 후보에는 과거·부정 표현이 포함될 수 있습니다. 현재 상태가 이와 같거나 불확실하면 병원에 즉시 연락하세요.</small><button class="text-btn" data-action="contact">병원 연락 안내 보기</button></div></div>`:'';}
 function followup() {
   const slots = intakeQuestions(form);
-  const candidates = slots.filter(slot => !slot.answer && slot.candidate);
-  const pending = slots.filter(slot => !slot.answer && !slot.candidate);
+  const proposed = slots.filter(slot => !slot.answer && slot.candidate);
+  const candidates = proposed.some(slot => slot.required) ? proposed : [];
+  const pending = slots.filter(slot => !slot.answer && (!slot.required || !slot.candidate));
   const current = pending.find(slot => slot.required) ?? pending.find(slot => slot.id === form.optionalQuestion);
   const optional = pending.filter(slot => !slot.required);
   const answered = slots.filter(slot => slot.answer);
   return `<div class="section-heading"><h1 tabindex="-1">조금만 더 알려 주세요.</h1></div>
     <div class="quote-box"><span>증상 설명</span><p>${esc(form.complaint)}</p><button class="text-btn" data-action="back">증상 설명 수정</button></div>
     ${candidates.length ? `<section class="info-box"><h2>증상 설명에서 찾은 답변 후보</h2>
-      <p>틀린 값만 고친 다음 한꺼번에 확인해 주세요.</p>
-      ${candidates.map(slot => `<div class="question"><label for="candidate-${slot.id}">${esc(slot.label)}</label>
+      <p>틀린 값만 고친 다음 한꺼번에 확인해 주세요. 선택 항목은 비워 두면 건너뜁니다.</p>
+      ${candidates.map(slot => `<div class="question"><label for="candidate-${slot.id}">${esc(slot.label)}${slot.required ? '' : ' <small>(선택)</small>'}</label>
         <small>원문 <q>${esc(slot.candidate.evidence)}</q></small>
         <input id="candidate-${slot.id}" data-candidate="${slot.id}" maxlength="1200" value="${esc(slot.candidate.value)}"></div>`).join('')}
       <button class="secondary" data-action="confirm-candidates">후보 값 확인</button></section>` :
       current ? `<div class="question"><label for="q-${current.id}">${esc(current.label)}</label>
-        <small>${form.clarifying === current.id ? clarification(current) : '모르면 “모르겠어요”, 해당하지 않으면 “없어요”로 답해 주세요.'}</small>
-        <textarea id="q-${current.id}" data-current="${current.id}" rows="2" maxlength="1200"></textarea>
+        <small>${current.candidate && form.clarifying !== current.id ? `원문 <q>${esc(current.candidate.evidence)}</q>` : form.clarifying === current.id ? clarification(current) : '모르면 “모르겠어요”, 해당하지 않으면 “없어요”로 답해 주세요.'}</small>
+        <textarea id="q-${current.id}" data-current="${current.id}" rows="2" maxlength="1200">${form.clarifying === current.id ? '' : esc(current.candidate?.value ?? '')}</textarea>
         <div class="button-row"><button class="secondary" data-action="save-answer">답변 확인</button>
         <button class="text-btn" data-action="unknown-answer">모르겠어요</button></div></div>` : '<p>필수 질문을 확인했어요. 위험 징후 확인으로 넘어갈 수 있어요.</p>'}
     ${answered.length ? `<details><summary>확인한 답변 수정</summary>
@@ -219,7 +220,7 @@ async function next(){
   }
   if(step===2){
     const slots = intakeQuestions(form);
-    if(slots.some(slot => slot.candidate && !slot.answer)){
+    if(slots.some(slot => slot.required && slot.candidate && !slot.answer)){
       $('[data-action="confirm-candidates"]').focus();
       throw new Error('답변 후보를 확인해 주세요.');
     }
@@ -296,8 +297,10 @@ $('#app').addEventListener('click',async e=>{
     if(action==='sample-complaint'){form.complaint='어제 저녁부터 두 번 토했어요. 오늘 아침 사료를 절반 정도 먹었고 평소보다 기운이 조금 없어요.';render();}
     if(action==='confirm-candidates'||action==='save-edits'){
       const attribute = action==='confirm-candidates' ? 'candidate' : 'edit';
+      const optional = new Set(intakeQuestions(form).filter(slot => !slot.required).map(slot => slot.id));
       for(const field of document.querySelectorAll('[data-'+attribute+']')){
         const id = field.dataset[attribute];
+        if(attribute==='candidate' && optional.has(id) && !field.value.trim()) continue;
         const value = field.value.trim() || '모르겠어요';
         if(attribute==='edit' && form.answers[id]!==value && !form.corrections.includes(id)) form.corrections.push(id);
         form.answers[id] = value;

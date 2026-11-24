@@ -5,6 +5,7 @@ import { QUESTION_VERSION, RISKS, draft, intakeQuestions, resolveQuestionAnswer,
 import { request as pages } from '../pages/demo.mjs';
 import { createApplication } from '../server.mjs';
 import { fixture } from './fixture.mjs';
+import { leoCases } from './leo-cases.mjs';
 
 const short = '어제 저녁부터 두 번 토했어요. 사료를 절반만 먹었어요.';
 const dated = '어제 두 번 토했어요. 오늘 한 번 토했어요. 설사는 오늘 세 번 했어요. 둘 다 어제부터였어요. 사료를 절반만 먹었어요.';
@@ -40,6 +41,18 @@ test('짧은 레오 사례는 확인 후 0~2개 질문, 선택 질문은 제출�
   }
   assert.deepEqual(remaining(confirm(intake('어제부터 토했어요.'))).map(slot => slot.label),
     ['이번에 몇 번 토했나요?','밥은 평소와 비교해 얼마나 먹었나요?']);
+});
+
+test('음수 후보를 건너뛰면 답변 없이 미확인으로 남는다', () => {
+  const input = confirm(intake(short + ' 물은 평소와 같아요.'));
+  delete input.answers.water;
+  const water = intakeQuestions(input).find(slot => slot.id === 'water');
+  assert.ok(water.candidate);
+  assert.equal(water.required, false);
+  assert.equal(water.answer, '');
+  assert.equal(validateIntake(input), null);
+  assert.ok(draft(input).missing.includes(water.label));
+  assert.ok(draft(input).hpi.includes(water.label + ' 미확인\n'));
 });
 
 test('같은 분류의 증상과 날짜별 횟수 정정을 독립적으로 유지', () => {
@@ -79,6 +92,9 @@ test('한 문장 안의 날짜별 횟수와 증상별 횟수도 각각 유지', 
   const combined = confirm(intake('구토 두 번과 설사 세 번 했어요.'));
   assert.equal(combined.answers['vomit-count'],'2회');
   assert.equal(combined.answers['diarrhea-count'],'3회');
+  const uncertainToday = confirm(intake('어제 두 번 오늘 한 번 토한 것 같아요.'));
+  assert.ok(remaining(uncertainToday).some(slot => slot.label === '오늘 몇 번 토했나요?'));
+  assert.ok(intakeQuestions(uncertainToday).some(slot => slot.label === '어제 몇 번 토했나요?' && slot.answer === '2회'));
   const ambiguous = confirm(intake('어제나 오늘 한 번 토했어요.'));
   assert.ok(remaining(ambiguous).some(slot => slot.id === 'vomit-count'));
 });
@@ -181,4 +197,39 @@ test('로컬 서버 HTTP 처리기에서 위험 응답 검증 후 질문 상태�
   } finally {
     app.close();
   }
+});
+
+test('불확실한 오늘 횟수도 필수이며 Pages 초안에 미확인으로 남는다', () => {
+  const input = confirm(intake('어제 두 번 토했어요. 오늘 한 번 토한 것 같아요. 사료를 절반만 먹었어요.'));
+  input.answers['vomit-onset'] = '어제';
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  const [today] = remaining(input);
+  assert.equal(today.label, '오늘 몇 번 토했나요?');
+  assert.equal(today.candidate, null);
+  input.answers[today.id] = '모르겠어요';
+  const receipt = pages('/api/intakes',{method:'POST',body:input});
+  pages('/api/login',{method:'POST',body:{role:'vet'}});
+  try {
+    const { draft: result } = pages('/api/intakes/'+receipt.id);
+    assert.ok(result.missing.includes(today.label));
+    assert.ok(result.timeline.some(slot => slot.label === today.label && slot.text === '미확인 (모르겠어요)'));
+    assert.ok(result.timeline.some(slot => slot.label === '어제 몇 번 토했나요?' && slot.text === '2회'));
+  } finally {
+    pages('/api/logout');
+  }
+});
+
+test('악화 시점과 처음 구토한 시점을 따로 확인한다', () => {
+  const slots = intakeQuestions(intake('어제 두 번 구토했어요. 오늘부터 구토가 심해졌어요.'));
+  assert.equal(slots.find(slot => slot.id === 'vomit-onset').candidate, null);
+  assert.ok(slots.some(slot => slot.label === '구토 관찰 시점 · 어제' && slot.candidate.value === '어제'));
+  assert.ok(slots.some(slot => slot.label.includes('경과 · 오늘') && slot.candidate.value === '심해졌어요'));
+  assert.ok(!slots.some(slot => slot.label === '오늘 몇 번 토했나요?'));
+});
+
+test('과거 위험 표현과 현재 메스꺼움 시작 시점을 따로 확인한다', () => {
+  const input = confirm(intake(leoCases.find(scenario => scenario.id === 'past').complaint));
+  assert.equal(intakeQuestions(input).find(slot => slot.id.endsWith('-onset')).answer, '오늘 아침');
+  assert.deepEqual(remaining(input).map(slot => slot.id), ['meal']);
+  assert.ok(draft(input).flags.some(flag => flag.id === 'collapse' && flag.level === 'candidate'));
 });

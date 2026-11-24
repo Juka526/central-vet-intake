@@ -139,6 +139,47 @@ async function run() {
     await submit();
     await openReview();
     assert.match(await page.locator('.missing-box').textContent(), /이번에 몇 번 토했나요/);
+    await page.reload();
+    await startLeo();
+    await page.locator('#complaint').fill('어제 저녁부터 두 번 토했어요. 사료를 절반만 먹었어요. 물은 평소와 같아요.');
+    await action('next');
+    await page.locator('[data-candidate="water"]').fill('');
+    await action('confirm-candidates');
+    await action('next');
+    await page.locator('.review-details summary').click();
+    assert.match(await page.locator('.review-details').textContent(), /물은 평소와 비교해 얼마나 마셨나요\?미확인/);
+    assert.doesNotMatch(await page.locator('.review-details').textContent(), /마셨나요\?미확인 \(모르겠어요\)/);
+    await submit();
+
+    await page.reload();
+    await startLeo();
+    await page.locator('#complaint').fill('어제 두 번 토했어요. 오늘 한 번 토한 것 같아요. 사료를 절반만 먹었어요.');
+    await action('next');
+    await action('confirm-candidates');
+    await action('next');
+    assert.equal(await page.locator(':focus').evaluate(field => field.labels[0].textContent), '오늘 몇 번 토했나요?');
+    await action('unknown-answer');
+    await page.getByLabel('처음 토한 때가 언제였나요?', {exact:true}).fill('어제');
+    await action('save-answer');
+    await action('next');
+    await submit();
+    await openReview();
+    assert.match(await page.locator('#review-hpi').inputValue(), /오늘 몇 번 토했나요\? 미확인 \(모르겠어요\)/);
+    assert.match(await page.locator('.missing-box').textContent(), /오늘 몇 번 토했나요/);
+
+    const { leoCases } = await import('../test/leo-cases.mjs');
+    await page.reload();
+    await startLeo();
+    await page.locator('#complaint').fill(leoCases.find(scenario => scenario.id === 'past').complaint);
+    await action('next');
+    assert.equal(await page.locator('[data-candidate$="-onset"]').inputValue(), '오늘 아침');
+    await action('confirm-candidates');
+    assert.equal(await page.locator('[data-current]').getAttribute('id'), 'q-meal');
+    await action('unknown-answer');
+    await action('next');
+    await submit();
+    await openReview();
+    assert.match(await page.locator('#review-hpi').inputValue(), /메스꺼움의 첫 증상은 언제였나요\? 오늘 아침/);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
