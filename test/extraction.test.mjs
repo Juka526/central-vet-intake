@@ -160,3 +160,13 @@ test('모른다는 말과 추정이 섞여도 별도로 확정한 답변의 근�
     assert.deepEqual(extractCandidates(complaint), expected, complaint);
   }
 });
+
+test('어쩌면으로 추측한 답과 둘 중 하나인 횟수는 미확인이다', () => {
+  assert.deepEqual(extractCandidates('어쩌면 어제부터 토했어요. 어쩌면 두 번 토했어요. 어쩌면 밥을 반만 먹었어요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+  assert.equal(extractCandidates('구토 두 번이나 세 번 했어요.').vomitCount.value, null);
+  assert.deepEqual(extractCandidates('구토 2회나 3회 했어요. 밥은 평소처럼 먹어요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: grounded('밥은 평소처럼 먹어요', '밥은 평소처럼 먹어요')
+  });
+});
