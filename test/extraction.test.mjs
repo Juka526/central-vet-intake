@@ -6,6 +6,28 @@ import { leoCases } from './leo-cases.mjs';
 const unknown = { value: null, evidence: null };
 const grounded = (value, evidence) => ({ value, evidence });
 
+test('식사량에 대한 추측은 값과 근거를 남기지 않는다', () => {
+  assert.deepEqual(extractCandidates('밥을 반만 먹었다고 봐요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('어제부터 두 번 토했어요, 밥을 반만 먹었다고 봅니다.'), {
+    onset: grounded('어제', '어제부터'),
+    vomitCount: grounded(2, '두 번 토했어요'),
+    mealChange: unknown
+  });
+});
+
+test('구토가 없었던 시점은 증상 시작으로 처리하지 않는다', () => {
+  assert.deepEqual(extractCandidates('어제부터 구토가 없었어요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('어제부터 구토는 없었어요. 오늘 아침 처음 토했어요. 식욕이 줄었어요.'), {
+    onset: grounded('오늘 아침', '오늘 아침 처음 토했어요'),
+    vomitCount: unknown,
+    mealChange: grounded('식욕이 줄었어요', '식욕이 줄었어요')
+  });
+});
+
 test('가상 레오 원문에서 답변 후보와 정확한 근거 구절을 반환한다', () => {
   const expected = [
     [grounded('어제 저녁', '어제 저녁부터'), unknown, grounded('밥을 절반만 먹어요', '밥을 절반만 먹어요')],
