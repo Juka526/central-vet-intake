@@ -101,3 +101,14 @@ test('시작 시점의 대안과 구토 횟수의 하한을 확정값으로 표�
     mealChange: grounded('식욕이 줄었어요', '식욕이 줄었어요')
   });
 });
+
+test('가능성이나 보호자의 추측을 명시 답변으로 처리하지 않는다', () => {
+  assert.deepEqual(extractCandidates('어제부터 토했을 수도 있어요. 2회 구토했을 수도 있어요. 밥을 반만 먹었다고 생각해요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+});
+
+test('구토를 총 몇 번 했는지 말한 문장의 근거를 연결한다', () => {
+  const complaint = '구토를 총 두 번 했어요. 설사는 세 번 했어요.';
+  assert.deepEqual(extractCandidates(complaint).vomitCount, grounded(2, '구토를 총 두 번 했어요'));
+});
