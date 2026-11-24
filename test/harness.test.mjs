@@ -15,9 +15,10 @@ function scenario(reviews, remote = ['pass']) {
       return {pass,report:pass?'test passed':'expected corrected answer; saw duplicate question'};
     },
     head() { return String(actions.length); }, save() {},
-    async publish() { draft ??= {id:1,ready:false}; },
+    async publish() { draft ??= {id:1,ready:false,merged:false}; },
     async ci() { return remote.shift(); },
-    async ready() { draft.ready = true; }
+    async ready() { draft.ready = true; },
+    async merge() { assert.equal(draft.ready,true); draft.merged = true; return true; }
   };
   return {state,hooks,actions,pr:()=>draft};
 }
@@ -37,6 +38,7 @@ test('실패 두 차례 보완 후 초안 유지',async()=>{
   const s=scenario([false,false,false]);
   assert.equal(await runStages(s.state,s.hooks),'blocked');
   assert.equal(s.pr().ready,false);
+  assert.equal(s.pr().merged,false);
   assert.deepEqual(s.actions,['develop','verify','repair','verify','repair','verify']);
 });
 
@@ -44,6 +46,7 @@ test('세부 개선 이후 독립 검증이 실패하면 재보완한다',async(
   const s=scenario([true,false,true]);
   assert.equal(await runStages(s.state,s.hooks),'done');
   assert.equal(s.pr().ready,true);
+  assert.equal(s.pr().merged,true);
   assert.deepEqual(s.actions,['develop','verify','improve','verify','repair','verify']);
 });
 
@@ -63,4 +66,19 @@ test('CI가 실패하면 준비 완료로 전환하지 않는다',async()=>{
   const s=scenario([true,true,true,true],['fail','fail','fail']);
   assert.equal(await runStages(s.state,s.hooks),'blocked');
   assert.equal(s.pr().ready,false);
+  assert.equal(s.pr().merged,false);
+});
+
+test('병합 대기 후 검증을 반복하지 않고 같은 PR에서 재개한다',async()=>{
+  const s=scenario([true,true]);
+  const merge=s.hooks.merge;
+  s.hooks.merge=async()=>false;
+  assert.equal(await runStages(s.state,s.hooks),'pending');
+  assert.equal(s.state.stage,'merge');
+  const pr=s.pr();
+  assert.equal(pr.merged,false);
+  s.hooks.merge=merge;
+  assert.equal(await runStages(structuredClone(s.state),s.hooks),'done');
+  assert.strictEqual(s.pr(),pr);
+  assert.equal(pr.merged,true);
 });
