@@ -206,3 +206,56 @@ test('쉼표 뒤의 추측은 해당 구절에 적용하고 별도의 명시 답
     onset: grounded('오늘', '오늘부터'), vomitCount: unknown, mealChange: unknown
   });
 });
+
+test('간접의문과 근사치에서 일부만 일치해도 후보를 만들지 않는다', () => {
+  const complaints = [
+    '어제부터 구토했는지 물어봤어요. 구토는 대충 2회예요. 밥을 반만 먹은 게 아닐까요.',
+    '어제부터 구토하나요. 두 번 토했냐고 물었어요. 밥을 반만 먹은 건지 확인해 주세요.',
+    '대충 두 번 토했어요.',
+    '얼추 두 번 토했어요.',
+    '대충, 두 번 토했어요.',
+    '한두 번 토했어요.',
+    '구토 2회라고 적은 건 착오예요.'
+  ];
+  for (const complaint of complaints) {
+    assert.deepEqual(extractCandidates(complaint), {
+      onset: unknown, vomitCount: unknown, mealChange: unknown
+    }, complaint);
+  }
+});
+
+test('후행 판단은 앞 진술에 적용하고 명시된 별도 관찰은 보존한다', () => {
+  for (const complaint of [
+    '구토 2회, 정확히는 모르겠어요, 식욕이 줄었어요.',
+    '구토가 두 번인지 세 번인지 모르겠지만 식욕이 줄었어요.',
+    '어제부터 두 번 토했어요, 그건 아직 확실치 않아요, 식욕이 줄었어요.'
+  ]) {
+    assert.deepEqual(extractCandidates(complaint), {
+      onset: unknown,
+      vomitCount: unknown,
+      mealChange: grounded('식욕이 줄었어요', '식욕이 줄었어요')
+    }, complaint);
+  }
+
+  assert.deepEqual(extractCandidates('어제부터 두 번 토했어요, 횟수는 확실치 않아요.'), {
+    onset: grounded('어제', '어제부터'),
+    vomitCount: unknown,
+    mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('어제부터 두 번 토했어요, 밥을 반만 먹은 게 아닐까요.'), {
+    onset: grounded('어제', '어제부터'),
+    vomitCount: grounded(2, '두 번 토했어요'),
+    mealChange: unknown
+  });
+});
+
+test('철회된 후보 대신 별도로 명시된 정정값의 원문을 반환한다', () => {
+  for (const complaint of [
+    '구토 2회라고 적은 건 착오예요. 실제로 한 번 토했어요.',
+    '구토 2회, 아니, 한 번 토했어요.'
+  ]) {
+    assert.deepEqual(extractCandidates(complaint), {
+      onset: unknown, vomitCount: grounded(1, '한 번 토했어요'), mealChange: unknown
+    }, complaint);
+  }
+});
