@@ -355,3 +355,23 @@ test('추측을 부정하거나 다른 관찰을 추측하면 앞 진술의 원�
     }, qualifier);
   }
 });
+
+test('중간에 독립된 사실이 있어도 뒤의 추정은 지목한 항목에 적용한다', () => {
+  assert.deepEqual(extractCandidates('어제부터 두 번 토했어요. 밥을 반만 먹었어요. 구토 횟수는 추정치예요.'), {
+    onset: grounded('어제', '어제부터'), vomitCount: unknown,
+    mealChange: grounded('밥을 반만 먹었어요', '밥을 반만 먹었어요')
+  });
+  assert.deepEqual(extractCandidates('밥을 반만 먹었어요. 세 번 토했어요. 식사 변화는 추정치예요.'), {
+    onset: unknown, vomitCount: grounded(3, '세 번 토했어요'), mealChange: unknown
+  });
+  assert.equal(extractCandidates('구토 2회. 횟수는 추정치예요. 실제로 한 번 토했어요.').vomitCount.value, 1);
+});
+
+test('구토를 시작했다고 명시한 문장은 해당 시점을 추출한다', () => {
+  assert.deepEqual(extractCandidates('어제 저녁부터 구토를 시작했어요. 세 번 토했어요. 식욕이 줄었어요.'), {
+    onset: grounded('어제 저녁', '어제 저녁부터'),
+    vomitCount: grounded(3, '세 번 토했어요'),
+    mealChange: grounded('식욕이 줄었어요', '식욕이 줄었어요')
+  });
+  assert.deepEqual(extractCandidates('어제 저녁부터 구토를 시작했는지 모르겠어요.').onset, unknown);
+});
