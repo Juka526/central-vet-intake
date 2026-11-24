@@ -74,7 +74,7 @@ export function createApplication({vetCode=process.env.VET_CODE||uid(),reception
           if(db.prepare('SELECT count(*) AS n FROM intakes').get().n>=250) return fail(res,429,'시험 접수 한도에 도달했습니다. 기존 자료를 삭제해 주세요.');
           const b=await body(req);const error=validateIntake(b);if(error)return fail(res,400,error);
           // Whitelist: client-supplied summaries, approval state and review identities are ignored.
-          const input={petId:b.petId,visitType:b.visitType,category:b.category,complaint:b.complaint.trim(),answers:b.answers,risks:Object.fromEntries(Object.entries(b.risks).filter(([k])=>['breathing','collapse','bleeding','toxin','urine','abdomen','heat','birth'].includes(k)))};
+          const input={petId:b.petId,visitType:b.visitType,category:b.category,complaint:b.complaint.trim(),answers:b.answers,...(b.questionVersion === undefined ? {} : {questionVersion:b.questionVersion,categories:b.categories,corrections:b.corrections ?? [],symptomSelections:b.symptomSelections ?? []}),risks:Object.fromEntries(Object.entries(b.risks).filter(([k])=>['breathing','collapse','bleeding','toxin','urine','abdomen','heat','birth'].includes(k)))};
           const id=uid(),createdAt=stamp();
           const record={id,...input,pet:PETS.find(p=>p.id===input.petId),draft:draft(input),status:'pending',version:1,createdAt,expiresAt:new Date(now()+24*HOUR).toISOString(),consents:{version:CONSENT_VERSION,privacy:true,voice:b.consents.voice,retainAudio:b.consents.retainAudio,at:createdAt},review:null};
           if(b.audio) {audio.set(id,{bytes:Buffer.from(b.audio.base64,'base64'),type:b.audio.type,expires:now()+HOUR});record.audioExpiresAt=new Date(now()+HOUR).toISOString();}

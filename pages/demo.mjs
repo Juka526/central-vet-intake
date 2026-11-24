@@ -32,11 +32,11 @@ function submit(body) {
   const error = validateIntake(body);
   if (error) throw new Error(error);
   if (records.size >= 250) throw new Error('시험 접수 한도에 도달했습니다.');
-  const { petId, visitType, category, complaint, answers, risks, consents } = structuredClone(body);
+  const { petId, visitType, category, complaint, answers, risks, consents, questionVersion, categories, corrections, symptomSelections } = structuredClone(body);
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 24 * hour).toISOString();
-  const input = { petId, visitType, category, complaint, answers, risks };
+  const input = { petId, visitType, category, complaint, answers, risks, ...(questionVersion === undefined ? {} : {questionVersion,categories,corrections:corrections ?? [],symptomSelections:symptomSelections ?? []}) };
   const record = { ...input, id, pet: PETS.find(p => p.id === petId), draft: draft(input),
     status: 'pending', version: 1, createdAt, expiresAt, consents: { ...consents, at: createdAt }, review: null };
   if (body.audio) {

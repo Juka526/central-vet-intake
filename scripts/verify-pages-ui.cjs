@@ -4,7 +4,6 @@ const assert = require('node:assert/strict');
 
 async function run() {
   const { default: worker } = await import('../dist/_worker.js');
-  const { leoCases, scoreQuestions } = await import('../test/leo-cases.mjs');
   let browser;
   try {
     browser = await chromium.launch({ executablePath: process.env.CHROME_BIN || '/usr/bin/google-chrome' });
@@ -83,58 +82,63 @@ async function run() {
     await action('delete-record');
     await page.locator('.empty-state').waitFor();
 
-    for (const scenario of leoCases) {
-      await page.reload();
-      await startLeo(scenario.visitType);
-      await page.locator('[data-category="digestive"]').click();
-      await page.locator('#complaint').fill(scenario.original ?? scenario.complaint);
-      await action('next');
-      if (scenario.original) {
-        assert.equal(await page.locator('.quote-box p').textContent(), scenario.original);
-        for (const [id, answer] of Object.entries(scenario.originalAnswers)) await page.locator(`#q-${id}`).fill(answer);
-        await page.getByRole('button', { name: '증상 설명 수정' }).click();
-        await page.locator('#complaint').fill(scenario.complaint);
-        await action('next');
-        assert.match(await page.locator('#answer-recovery').textContent(), /관련 답변도 수정/);
-        for (const [id, answer] of Object.entries(scenario.originalAnswers)) assert.equal(await page.locator(`#q-${id}`).inputValue(), answer);
-      }
-      const fields = page.locator('textarea[data-answer]');
-      await fields.first().waitFor();
-      const questionIds = await fields.evaluateAll(items => items.map(el => el.dataset.answer));
-      assert.deepEqual(scoreQuestions(scenario, questionIds), scenario.baseline, scenario.id);
-      for (const id of questionIds) {
-        await page.locator(`#q-${id}`).fill(scenario.answers?.[id] ?? '모름');
-      }
-      await action('next');
-      if (scenario.original) {
-        await page.locator('.review-details summary').click();
-        const summary = await page.locator('.review-details').textContent();
-        assert.ok(summary.includes(scenario.complaint));
-        assert.doesNotMatch(summary, /두 번/);
-      }
-      await submit(scenario.risks);
-      await openReview();
-      assert.equal(await page.locator('.source-text').textContent(), scenario.complaint);
-      if (scenario.original) {
-        const original = await page.locator('.source-pane').textContent();
-        assert.doesNotMatch(original, /두 번/);
-        for (const answer of Object.values(scenario.answers)) assert.ok(original.includes(answer));
-      }
-      for (const id of ['review-hpi', 'review-soapS']) {
-        const draft = await page.locator(`#${id}`).inputValue();
-        assert.ok(draft.includes(scenario.complaint), scenario.id);
-        if (scenario.original) {
-          assert.doesNotMatch(draft, /두 번/);
-          for (const answer of Object.values(scenario.answers)) assert.ok(draft.includes(answer));
-        }
-      }
-      if (scenario.flag) assert.match(await page.locator('#review-panel .risk-banner').textContent(), /원문 키워드 후보/);
-      if (scenario.id === 'unknown') {
-        assert.match(await page.locator('.missing-box').textContent(), /언제부터 시작됐나요/);
-        assert.match(await page.locator('#review-panel .risk-banner').textContent(), /보호자 확인 필요/);
-      }
-      if (scenario.visitType === 'return') assert.match(await page.locator('#review-hpi').inputValue(), /레오 \/ 강아지 \/ 재진/);
+    await page.reload();
+    await startLeo();
+    const complaint = '어제 두 번 토했어요. 오늘 한 번 토했어요. 설사는 오늘 세 번 했어요. 둘 다 어제부터였어요. 사료를 절반만 먹었어요.';
+    await page.locator('#complaint').fill(complaint);
+    await page.locator('[data-category="digestive"]').click();
+    await page.locator('[data-category="respiratory"]').click();
+    assert.equal(await page.locator('[data-category="digestive"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('[data-category="respiratory"]').getAttribute('aria-pressed'), 'true');
+    await page.locator('[data-category="respiratory"]').click();
+    await page.locator('[data-symptom="vomit"]').click();
+    await page.locator('[data-symptom="diarrhea"]').click();
+    assert.equal(await page.locator('[data-symptom="vomit"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('[data-symptom="diarrhea"]').getAttribute('aria-pressed'), 'true');
+    await action('next');
+    const yesterday = page.getByLabel('어제 몇 번 토했나요?', { exact:true });
+    await yesterday.fill('4회');
+    await action('confirm-candidates');
+    assert.equal(await page.locator('[data-current]').count(), 0);
+    await page.getByText('확인한 답변 수정', { exact:true }).click();
+    assert.equal(await yesterday.inputValue(),'4회');
+    assert.equal(await page.getByLabel('오늘 몇 번 토했나요?', {exact:true}).inputValue(),'1회');
+    assert.equal(await page.getByLabel('오늘 설사가 몇 번 있었나요?', {exact:true}).inputValue(),'3회');
+    await yesterday.fill('5회');
+    await action('save-edits');
+    await action('next');
+    await page.locator('.review-details summary').click();
+    assert.match(await page.locator('.review-details').textContent(), /5회 \(보호자 정정\)/);
+    await submit({toxin:'unsure'});
+    await openReview();
+    assert.equal(await page.locator('.source-text').textContent(), complaint);
+    for (const id of ['review-hpi','review-soapS']) {
+      const document = await page.locator('#'+id).inputValue();
+      assert.match(document, /어제 몇 번 토했나요\? 5회 \(보호자 정정\)/);
+      assert.match(document, /오늘 몇 번 토했나요\? 1회/);
+      assert.match(document, /오늘 설사가 몇 번 있었나요\? 3회/);
     }
+    assert.match(await page.locator('#review-panel .risk-banner').textContent(), /보호자 확인 필요/);
+
+    await page.reload();
+    await startLeo();
+    await page.locator('#complaint').fill('어제부터 토했어요.');
+    await action('next');
+    await action('confirm-candidates');
+    await action('next');
+    assert.equal(await page.locator(':focus').getAttribute('id'),'q-vomit-count');
+    await page.locator('[data-current]').fill('글쎄요');
+    await action('save-answer');
+    assert.match(await page.locator('.question small').first().textContent(), /관찰한 횟수/);
+    await page.locator('[data-current]').fill('아마 두 번');
+    await action('save-answer');
+    assert.equal(await page.locator('[data-current]').getAttribute('id'),'q-meal');
+    await action('unknown-answer');
+    assert.equal(await page.locator('[data-current]').count(),0);
+    await action('next');
+    await submit();
+    await openReview();
+    assert.match(await page.locator('.missing-box').textContent(), /이번에 몇 번 토했나요/);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
