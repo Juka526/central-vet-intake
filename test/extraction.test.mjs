@@ -112,3 +112,25 @@ test('구토를 총 몇 번 했는지 말한 문장의 근거를 연결한다', 
   const complaint = '구토를 총 두 번 했어요. 설사는 세 번 했어요.';
   assert.deepEqual(extractCandidates(complaint).vomitCount, grounded(2, '구토를 총 두 번 했어요'));
 });
+
+test('쉼표 뒤의 불확실성 표현과 확인 중인 증상은 미확인이다', () => {
+  const complaints = [
+    '어제부터 구토, 정확히는 모르겠어요.',
+    '두 번 토했는지 확인 중이에요.',
+    '밥을 반만 먹은 모양이에요.'
+  ];
+  for (const complaint of complaints) {
+    assert.deepEqual(extractCandidates(complaint), {
+      onset: unknown, vomitCount: unknown, mealChange: unknown
+    }, complaint);
+  }
+});
+
+test('쉼표 뒤의 독립된 추측과 같은 문장의 명시된 답변을 구분한다', () => {
+  const complaint = '어제부터 구토, 정확히는 모르겠어요, 식욕이 줄었어요. 구토를 총 두 번 했어요, 밥을 반만 먹은 모양이에요.';
+  assert.deepEqual(extractCandidates(complaint), {
+    onset: unknown,
+    vomitCount: grounded(2, '구토를 총 두 번 했어요'),
+    mealChange: grounded('식욕이 줄었어요', '식욕이 줄었어요')
+  });
+});
