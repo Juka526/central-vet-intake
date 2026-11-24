@@ -274,6 +274,23 @@ test('별도 문장의 아마요는 바로 앞 관찰에만 적용한다', () =>
   });
 });
 
+test('추정치라고 밝힌 항목의 값과 근거만 지운다', () => {
+  assert.deepEqual(extractCandidates('어제부터 두 번 토했어요. 횟수는 추정치예요.'), {
+    onset: grounded('어제', '어제부터'), vomitCount: unknown, mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('어제부터 두 번 토했어요. 시작 시점은 추정치입니다.'), {
+    onset: unknown, vomitCount: grounded(2, '두 번 토했어요'), mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('밥을 반만 먹었어요. 식사량은 추정치예요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('어제부터 두 번 토했어요. 횟수는 추정치가 아니에요.'), {
+    onset: grounded('어제', '어제부터'),
+    vomitCount: grounded(2, '두 번 토했어요'),
+    mealChange: unknown
+  });
+});
+
 test('언제 시작됐는지 명시한 문장에서 시작 시점과 원문을 연결한다', () => {
   const complaint = '어제 아침에 시작됐어요. 세 번 토했고 밥을 평소보다 적게 먹었어요.';
   assert.deepEqual(extractCandidates(complaint), {
