@@ -176,13 +176,30 @@ async function processIssue(root, issue, gh, ghJson) {
     },
     verify() {
       let failed = '';
+      const checks = [];
       for (const args of checkCommands) {
-        try { invoke('npm',args,tree,{timeout:20 * 60 * 1000}); }
-        catch (error) { failed = error.message; break; }
+        try {
+          invoke('npm',args,tree,{timeout:20 * 60 * 1000});
+          checks.push('npm ' + args.join(' ') + ': PASS');
+        } catch (error) { failed = error.message; break; }
+      }
+      if (!failed && process.env.INTAKE_BROWSER_TEST_DIR) {
+        const env = { ...process.env, NODE_PATH: join(process.env.INTAKE_BROWSER_TEST_DIR,'node_modules') };
+        try {
+          env.CHROME_BIN = invoke('node',['-p',"require('playwright-core').chromium.executablePath()"],tree,{env});
+          invoke('node',['scripts/verify-pages-ui.cjs'],tree,{env,timeout:2 * 60 * 1000});
+          checks.push('Chromium mobile Pages UI: PASS');
+        } catch (error) { failed = error.message; }
       }
       if (dirty() || state.head !== head()) throw new Error('Verification changed the worktree or commit.');
-      const result = codex('verify',tree,control,spec + 'Independently inspect git diff origin/main...HEAD and verify each original acceptance criterion. Use the normal entry points where possible. Give reproduction steps and expected/actual evidence. Missing required evidence is a failure.\nLocal checks: ' + (failed || 'pass'));
-      return {pass:result.pass && !failed, report:'verify ('+state.head+')\n'+result.report+'\n'+(failed || 'Local syntax, tests and Pages build passed.')};
+      const evidence = ['Host verification for ' + state.head, ...checks,
+        failed || (!process.env.INTAKE_BROWSER_TEST_DIR ? 'Browser verification runs in GitHub CI.' : '')
+      ].filter(Boolean).join('\n');
+      const result = codex('verify',tree,control,spec
+        + 'Independently inspect git diff origin/main...HEAD and verify each original acceptance criterion. Use the normal entry points where possible. Give reproduction steps and expected/actual evidence. Missing required evidence is a failure.\n'
+        + 'The orchestrator ran these checks outside the read-only sandbox on this commit. Use these results as evidence for those checks. The read-only sandbox can block loopback ports and Chromium, so do not repeat a passed host check there. Independently review whether the tests cover the acceptance criteria and run targeted checks where useful.\n'
+        + evidence);
+      return {pass:result.pass && !failed, report:'verify ('+state.head+')\n'+result.report+'\n'+evidence};
     },
     async ci() {
       const pr = prs().find(p=>p.state==='OPEN');

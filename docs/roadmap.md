@@ -28,4 +28,13 @@ npm run harness -- --issue 42
 
 ## 검증 기록
 
+하네스가 쓰기 작업과 분리된 호스트에서 API 테스트를 실행하고, 같은 커밋의 실행 결과를 독립 검증에 전달합니다. 모바일 브라우저 테스트를 로컬 호스트에서도 실행하려면 CI와 같은 버전의 Playwright와 Chromium을 준비합니다.
+
+~~~sh
+browser_dir="$HOME/.local/share/central-vet-intake/browser-test"
+npm install --prefix "$browser_dir" --no-save --ignore-scripts playwright-core@1.55.0
+node "$browser_dir/node_modules/playwright-core/cli.js" install --no-shell chromium
+export INTAKE_BROWSER_TEST_DIR="$browser_dir"
+~~~
+
 로컬에서 엔진·하네스 상태 전이·Pages 번들·합성 저장 계약 테스트를 실행합니다. 실제 GitHub CI, 브라우저 흐름과 에뮬레이터 결과는 PR의 `CI / verify`에서 확인합니다. Cloud Run 운영 리비전과 Firestore·Storage 실제 왕복 결과는 수동 배포 시 기록합니다. 설정 및 검증 절차는 [Google Cloud 배포](cloud.md)에 있습니다.
