@@ -85,3 +85,19 @@ test('대안으로 제시한 횟수와 추측한 식사 변화는 미확인이�
   assert.deepEqual(extractCandidates('두 번 혹은 세 번 토했어요.').vomitCount, unknown);
   assert.deepEqual(extractCandidates('2 또는 3회 토했어요.').vomitCount, unknown);
 });
+
+test('시작 시점의 대안과 구토 횟수의 하한을 확정값으로 표시하지 않는다', () => {
+  assert.deepEqual(extractCandidates('어제나 오늘부터 토했어요. 최소 2회 구토했어요. 밥을 반만 먹은 듯해요.'), {
+    onset: unknown,
+    vomitCount: unknown,
+    mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('어제 저녁 또는 오늘 아침 처음 토했어요.').onset, unknown);
+  assert.deepEqual(extractCandidates('적어도 두 번 구토했어요.').vomitCount, unknown);
+  assert.deepEqual(extractCandidates('최대 3회 구토했어요.').vomitCount, unknown);
+  assert.deepEqual(extractCandidates('오늘부터 구토했어요. 최소 2회 구토했어요. 식욕이 줄었어요.'), {
+    onset: grounded('오늘', '오늘부터'),
+    vomitCount: unknown,
+    mealChange: grounded('식욕이 줄었어요', '식욕이 줄었어요')
+  });
+});
