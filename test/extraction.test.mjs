@@ -301,3 +301,14 @@ test('언제 시작됐는지 명시한 문장에서 시작 시점과 원문을 �
   assert.deepEqual(extractCandidates('어제 아침에 시작됐는지 확인 중이에요.').onset, unknown);
   assert.deepEqual(extractCandidates('어제 아침에 시작됐어요. 아마요.').onset, unknown);
 });
+
+test('식사 변화와 먹는 양을 추정치라고 밝히면 해당 근거만 지운다', () => {
+  for (const topic of ['식사 변화는', '먹는 양은', '식욕 변화는']) {
+    assert.deepEqual(extractCandidates('어제부터 두 번 토했어요. 밥을 반만 먹었어요. ' + topic + ' 추정치예요.'), {
+      onset: grounded('어제', '어제부터'),
+      vomitCount: grounded(2, '두 번 토했어요'),
+      mealChange: unknown
+    }, topic);
+  }
+  assert.equal(extractCandidates('밥을 반만 먹었어요. 식사 변화는 추정치가 아니에요.').mealChange.value, '밥을 반만 먹었어요');
+});
