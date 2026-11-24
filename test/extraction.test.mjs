@@ -134,3 +134,29 @@ test('쉼표 뒤의 독립된 추측과 같은 문장의 명시된 답변을 구
     mealChange: grounded('식욕이 줄었어요', '식욕이 줄었어요')
   });
 });
+
+test('모른다는 진술과 관찰자의 추정은 잘린 원문을 근거로 남기지 않는다', () => {
+  assert.deepEqual(extractCandidates('어제부터 두 번 토했는지 몰라요. 밥을 반만 먹은 것으로 보여요.'), {
+    onset: unknown,
+    vomitCount: unknown,
+    mealChange: unknown
+  });
+});
+
+test('모른다는 말과 추정이 섞여도 별도로 확정한 답변의 근거를 보존한다', () => {
+  const cases = [
+    ['어제부터 두 번 토했는지 몰라요, 식욕이 줄었어요.', {
+      onset: unknown,
+      vomitCount: unknown,
+      mealChange: grounded('식욕이 줄었어요', '식욕이 줄었어요')
+    }],
+    ['오늘부터 구토했어요, 구토를 총 두 번 했어요, 밥을 반만 먹은 것으로 보여요.', {
+      onset: grounded('오늘', '오늘부터'),
+      vomitCount: grounded(2, '구토를 총 두 번 했어요'),
+      mealChange: unknown
+    }]
+  ];
+  for (const [complaint, expected] of cases) {
+    assert.deepEqual(extractCandidates(complaint), expected, complaint);
+  }
+});
