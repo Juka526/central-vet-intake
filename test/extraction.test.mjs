@@ -170,3 +170,17 @@ test('어쩌면으로 추측한 답과 둘 중 하나인 횟수는 미확인이�
     onset: unknown, vomitCount: unknown, mealChange: grounded('밥은 평소처럼 먹어요', '밥은 평소처럼 먹어요')
   });
 });
+
+test('대략적인 시작 시점과 쉼표 뒤에 추측으로 밝힌 답변은 미확인이다', () => {
+  const complaint = '대략 어제 저녁부터 토했어요. 두 번 토했어요, 아마요. 밥을 반만 먹었어요, 그렇게 짐작해요.';
+  assert.deepEqual(extractCandidates(complaint), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+});
+
+test('쉼표 뒤의 추측은 해당 구절에 적용하고 별도의 명시 답변은 보존한다', () => {
+  const complaint = '오늘부터 구토했어요, 아마 두 번 토했어요. 밥을 반만 먹었어요, 그렇게 짐작해요.';
+  assert.deepEqual(extractCandidates(complaint), {
+    onset: grounded('오늘', '오늘부터'), vomitCount: unknown, mealChange: unknown
+  });
+});
