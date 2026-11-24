@@ -49,7 +49,7 @@ g iam service-accounts add-iam-policy-binding "$runtime" --member="serviceAccoun
 pool=intake-github
 g iam workload-identity-pools describe "$pool" --location=global >/dev/null 2>&1 || g iam workload-identity-pools create "$pool" --location=global --display-name='Intake GitHub'
 provider=(github --location=global --workload-identity-pool="$pool")
-condition="assertion.repository_id == '$repo_id' && assertion.sub == 'repo:Juka526/central-vet-intake:environment:production' && assertion.ref == 'refs/heads/main'"
+condition="assertion.repository_id == '$repo_id' && assertion.sub == 'repo:Juka526@122841642/central-vet-intake@$repo_id:environment:production' && assertion.ref == 'refs/heads/main'"
 settings=(--issuer-uri=https://token.actions.githubusercontent.com "--attribute-mapping=google.subject=assertion.sub,attribute.repository_id=assertion.repository_id" "--attribute-condition=$condition")
 if g iam workload-identity-pools providers describe "${provider[@]}" >/dev/null 2>&1; then
   g iam workload-identity-pools providers update-oidc "${provider[@]}" "${settings[@]}"
