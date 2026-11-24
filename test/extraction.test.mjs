@@ -331,3 +331,27 @@ test('식사 변화라고 명시한 추정치는 값과 근거를 남기지 않�
     onset: unknown, vomitCount: unknown, mealChange: unknown
   });
 });
+
+test('주어를 생략한 후행 추측은 바로 앞 진술의 값과 근거를 지운다', () => {
+  assert.deepEqual(extractCandidates('어제부터 두 번 토했어요. 제 추측이에요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('밥을 반만 먹었어요, 아마 그랬을 거예요.'), {
+    onset: unknown, vomitCount: unknown, mealChange: unknown
+  });
+  assert.deepEqual(extractCandidates('어제부터 두 번 토했어요. 밥을 반만 먹었어요, 아마 그랬을 거예요.'), {
+    onset: grounded('어제', '어제부터'),
+    vomitCount: grounded(2, '두 번 토했어요'),
+    mealChange: unknown
+  });
+});
+
+test('추측을 부정하거나 다른 관찰을 추측하면 앞 진술의 원문을 보존한다', () => {
+  for (const qualifier of ['제 추측이 아니에요.', '아마 오늘은 밥을 먹을 거예요.']) {
+    assert.deepEqual(extractCandidates('어제 저녁부터 두 번 토했어요. 밥도 평소보다 적게 먹고요. ' + qualifier), {
+      onset: grounded('어제 저녁', '어제 저녁부터'),
+      vomitCount: grounded(2, '두 번 토했어요'),
+      mealChange: grounded('밥도 평소보다 적게 먹고요', '밥도 평소보다 적게 먹고요')
+    }, qualifier);
+  }
+});
