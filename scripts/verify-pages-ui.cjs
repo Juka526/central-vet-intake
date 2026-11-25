@@ -55,8 +55,13 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
       response = await invoke(body);
       if ((method === 'POST' && path === '/api/intakes' && loseSubmission) ||
           (path.endsWith('/review') && loseReview)) {
-        if (path === '/api/intakes') loseSubmission = false;
-        else loseReview = false;
+        if (path === '/api/intakes') {
+          loseSubmission = false;
+          if (editAfterLoss) {
+            await route.fulfill({ status: 502, contentType: 'text/html', body: '<p>Gateway error</p>' });
+            return;
+          }
+        } else loseReview = false;
         response = { status: 503, body: { error: '합성 저장 응답 유실' } };
       }
     } catch (error) {
@@ -74,6 +79,12 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
   await choose('input[name="privacy"]');
   await action('next');
   await action('sample-complaint');
+  const draftComplaint = await page.locator('#complaint').inputValue();
+  await action('staff');
+  await page.locator('#login-form button[type="submit"]').click();
+  await page.locator('.staff-main').waitFor();
+  await action('guardian');
+  assert.equal(await page.locator('#complaint').inputValue(), draftComplaint);
   await action('next');
   await action('sample-answers');
   await action('next');
@@ -81,7 +92,7 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
     await choose('input[name="' + risk + '"][value="no"]');
   await choose('#final-confirm');
   await action('next');
-  await page.getByText('합성 저장 응답 유실').waitFor();
+  await page.getByText(editAfterLoss ? /클라우드 응답을 확인할 수 없습니다/ : '합성 저장 응답 유실').waitFor();
   assert.equal(await page.locator('#final-confirm').isChecked(), true);
   let editedComplaint;
   if (editAfterLoss) {
@@ -112,6 +123,8 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
     await action('back');
     await action('back');
     assert.equal(await page.locator('#complaint').inputValue(), editedComplaint);
+    await action('next');
+    await action('next');
     await action('staff');
     await page.locator('#login-form button[type="submit"]').click();
   }
@@ -120,10 +133,17 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
   const hpi = page.locator('#review-hpi');
   const edited = await hpi.inputValue() + '\n시연 입력 유지';
   await hpi.fill(edited);
+  await action('guardian');
+  if (!editAfterLoss) await page.locator('.receipt').waitFor();
+  await action('staff');
+  await page.locator('#login-form button[type="submit"]').click();
+  await page.locator('tbody [data-open]').click();
+  assert.equal(await hpi.inputValue(), edited);
   await choose('#source-confirmed');
   if (await page.locator('#risk-confirmed').count()) await choose('#risk-confirmed');
   await action('approve');
   await page.getByText(/문서 버전이 변경되었습니다/).waitFor();
+  assert.equal(await page.locator(':focus').getAttribute('data-action'), 'approve');
   assert.equal(await hpi.inputValue(), edited);
   await page.getByRole('button', { name: '최신 기록 다시 열기' }).click();
   await page.getByText('현재 저장본 확인 · 내 수정은 입력란에 유지').waitFor();
@@ -142,6 +162,13 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
   page.once('dialog', dialog => dialog.accept());
   await action('delete-record');
   await page.getByText('아직 접수된 문진이 없어요.').waitFor();
+  await action('guardian');
+  assert.equal(await page.locator('.receipt').count(), 0);
+  if (editAfterLoss) {
+    await action('back');
+    await action('back');
+    assert.equal(await page.locator('#complaint').inputValue(), editedComplaint);
+  }
   assert.deepEqual(errors, []);
   await page.close();
 }

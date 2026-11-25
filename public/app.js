@@ -88,7 +88,13 @@ async function api(path,options={}){
   if(demo)return demo.request(path,options);
   const signal=cloudRequests?.signal;
   const res=await fetch(path,{...options,...(signal?{signal}:{}),headers:{'Content-Type':'application/json',...(cloud?{Authorization:'Bearer '+cloudToken,'X-Demo-Role':session?.role||'guardian'}:{'X-CSRF-Token':session?.csrf||''}),...options.headers},body:options.body?JSON.stringify(options.body):undefined});
-  const data=await res.json();
+  let data;
+  try { data = await res.json(); }
+  catch (error) {
+    signal?.throwIfAborted();
+    if (!cloud) throw error;
+    throw new Error('클라우드 응답을 확인할 수 없습니다. 현재 입력을 유지한 채 다시 시도해 주세요.');
+  }
   signal?.throwIfAborted();
   if(!res.ok)throw Object.assign(new Error(data.error||'요청 처리에 실패했습니다.'),{existingSubmissionId:data.existingSubmissionId});
   return data;
@@ -156,7 +162,7 @@ function candidatePreview(complaint) {
 }
 function followup(){const qs=questions(form.category,form.complaint,form.visitType,form.answers);return `<div class="section-heading"><span class="eyebrow">맞춤 후속 질문 · ${qs.length}개</span><h1 tabindex="-1">조금만 더 알려 주세요.</h1><p>앞서 알려주신 증상을 바탕으로 필요한 내용을 확인할게요.<br>모르는 항목은 “모름”, 해당하지 않으면 “없음”으로 적어 주세요.</p></div><div class="quote-box"><span>증상 설명</span><p>${esc(form.complaint)}</p><button class="text-btn" data-action="back">증상 설명 수정</button></div>${candidatePreview(form.complaint)}${Object.keys(form.answers).length ? '<p id="answer-recovery" class="info-box">이전에 작성한 답변을 불러왔어요. 증상 설명을 고쳤다면 관련 답변도 수정해 주세요.</p>' : ''}<div class="label-row"><p class="muted">${CATEGORIES.find(c=>c.id===form.category).label} 중심 문진</p><button class="text-btn" data-action="sample-answers">가상 답변 채우기</button></div>${qs.map((q,i)=>`<div class="question"><label for="q-${q.id}"><span class="question-no">${i+1}</span>${esc(q.label)}</label><small id="help-${q.id}">${esc(q.help)}</small><textarea id="q-${q.id}" aria-describedby="help-${q.id}" data-answer="${q.id}" rows="2" maxlength="1200" placeholder="관찰한 내용 또는 모름">${esc(form.answers[q.id]||'')}</textarea></div>`).join('')}<div id="live-risk">${liveRisk()}</div>`;}
 function confirmation(){return `<div class="section-heading"><span class="eyebrow">마지막 확인</span><h1 tabindex="-1">위험 징후를 확인해 주세요.</h1><p>현재 모습과 가장 가까운 답을 골라 주세요.<br>“모르겠어요”도 의료진이 확인할 중요한 정보입니다.</p></div>${contact()}<div class="risk-list">${RISKS.map(r=>`<fieldset><legend>${esc(r.label)}</legend><div class="risk-options">${[['yes','예'],['no','아니요'],['unsure','모르겠어요']].map(([v,l])=>`<label class="risk-option ${form.risks[r.id]===v?'chosen '+v:''}"><input type="radio" name="risk-${r.id}" value="${v}" ${form.risks[r.id]===v?'checked':''}>${l}</label>`).join('')}</div></fieldset>`).join('')}</div><div id="live-risk">${liveRisk()}</div><details class="review-details"><summary>제출할 문진 내용 확인</summary><dl><dt>환자 · 방문</dt><dd>${esc(pet().name)} · ${form.visitType==='return'?'재진':'초진'} · 가상 정보</dd><dt>주호소</dt><dd>${esc(form.complaint)}</dd>${questions(form.category,form.complaint,form.visitType,form.answers).map(q=>`<dt>${esc(q.label)}</dt><dd>${esc(form.answers[q.id])}</dd>`).join('')}</dl><p>음성 원본 보관: ${form.consents.retainAudio?'선택 동의 · 녹음이 있는 경우 제출 후 최대 1시간':'동의 안 함 · 원본 녹음 없음'}</p></details><label class="checkbox final-check"><input type="checkbox" id="final-confirm"><span>입력 내용을 확인했습니다. 이 문진은 응급 연락이나 진료를 대체하지 않음을 이해합니다.</span></label>`;}
-function receiptView(){return `<main class="receipt-wrap"><section class="receipt card"><span class="success-orb">${icon('check')}</span><span class="eyebrow">문진 제출 완료</span><h1 tabindex="-1">${esc(pet().name)}의 이야기를 전달했어요.</h1><p>수의사가 원문과 문진 초안을 검토합니다.<br>지금은 <b>검토 대기</b> 상태입니다. 자동 승인되지 않습니다.</p><div class="receipt-id">접수 번호 <b>${esc(receipt.id.slice(0,8).toUpperCase())}</b><small>가상 정보 · ${date(receipt.expiresAt)}까지 보관${cloud?'':demo?' (새로고침·탭 닫기 시 삭제)':' (서버 종료 시 즉시 소멸)'}</small></div>${receipt.flags.length?contact():`<div class="info-box">위험 징후가 체크되지 않았어도 응급 상태가 배제된 것은 아닙니다.<br>상태가 나빠지거나 걱정되면 즉시 병원에 연락해 주세요.</div>`}<div class="button-row"><button class="primary" data-action="new">새 문진 시작 · 화면 비우기</button><button class="secondary" data-action="staff">의료진 검토 시험</button></div><div class="receipt-controls">${chatButton(receipt.id,'접수 담당자와 대화')}<button class="text-btn" data-action="delete-own">제출 자료 삭제</button>${receipt.audioExpiresAt?'<button class="text-btn" data-action="delete-own-audio">음성 원본만 삭제</button>':''}</div><p class="muted small">${esc(SAFETY)}</p></section></main>`;}
+function receiptView(){return `<main class="receipt-wrap"><section class="receipt card"><span class="success-orb">${icon('check')}</span><span class="eyebrow">문진 제출 완료</span><h1 tabindex="-1">${esc(pet().name)}의 이야기를 전달했어요.</h1><p>수의사가 원문과 문진 초안을 검토합니다.<br>${cloud?'접수 당시에는 <b>검토 대기</b> 상태입니다. 검토 결과는 의료진 공간에서 확인할 수 있습니다.':'지금은 <b>검토 대기</b> 상태입니다. 자동 승인되지 않습니다.'}</p><div class="receipt-id">접수 번호 <b>${esc(receipt.id.slice(0,8).toUpperCase())}</b><small>가상 정보 · ${date(receipt.expiresAt)}까지 보관${cloud?'':demo?' (새로고침·탭 닫기 시 삭제)':' (서버 종료 시 즉시 소멸)'}</small></div>${receipt.flags.length?contact():`<div class="info-box">위험 징후가 체크되지 않았어도 응급 상태가 배제된 것은 아닙니다.<br>상태가 나빠지거나 걱정되면 즉시 병원에 연락해 주세요.</div>`}<div class="button-row"><button class="primary" data-action="new">새 문진 시작 · 화면 비우기</button><button class="secondary" data-action="staff">의료진 검토 시험</button></div><div class="receipt-controls">${chatButton(receipt.id,'접수 담당자와 대화')}<button class="text-btn" data-action="delete-own">제출 자료 삭제</button>${receipt.audioExpiresAt?'<button class="text-btn" data-action="delete-own-audio">음성 원본만 삭제</button>':''}</div><p class="muted small">${esc(SAFETY)}</p></section></main>`;}
 function showSubmissionConflict() {
   const notice = $('#submission-conflict');
   if (notice && submission?.conflict) {
@@ -232,7 +238,7 @@ function syncReview(){
     reviewEdits.set(selected.id, working);
   else if (cloud) reviewEdits.delete(selected.id);
 }
-async function review(status){
+async function review(status, button){
   syncReview();const w=selected.working;
   if(cloud)reviewEdits.set(selected.id,w);
   const panel=$('#review-panel');
@@ -240,19 +246,28 @@ async function review(status){
   if(cloud){busy=true;panel.inert=true;}
   let updated;
   try{updated=await api(`/api/intakes/${selected.id}/review`,{method:'POST',body:{...w,version:selected.version,status,confirmed:$('#source-confirmed').checked,riskAcknowledged:$('#risk-confirmed')?.checked||false}});
-  }finally{if(cloud&&!signal.aborted){busy=false;panel.inert=false;}}
+  }finally{
+    if(cloud&&!signal.aborted){
+      busy=false;
+      panel.inert=false;
+      if (!updated) {
+        button.disabled=false;
+        button.focus({preventScroll:true});
+      }
+    }
+  }
   reviewEdits.delete(updated.id);
   selected=updated;
   if(cloud)items=items.map(item=>item.id===updated.id?{...item,status:updated.status,version:updated.version}:item);
   else await refresh();
-  render();toast(status==='approved'?'수의사 승인 완료. 승인본을 복사할 수 있습니다.':'보류했습니다. 복사는 계속 잠겨 있습니다.');$('#review-panel')?.scrollIntoView({block:'start'});
+  render();toast(status==='approved'?'수의사 승인 완료. 승인본을 복사할 수 있습니다.':'보류했습니다. 복사는 계속 잠겨 있습니다.');$('#review-panel h2')?.focus({preventScroll:true});$('#review-panel')?.scrollIntoView({block:'start'});
 }
 async function exportRecord(kind){
   const signal=cloudRequests?.signal;
   $('#copy-fallback').replaceChildren();
   if($('#review-hpi').value!==selected.review.hpi||$('#review-soapS').value!==selected.review.soapS){toast('승인 후 수정된 내용이 있습니다. 다시 승인한 뒤 복사해 주세요.',true);return;}
   const {text}=await api(`/api/intakes/${selected.id}/export`,{method:'POST',body:{kind,version:selected.version}});
-  try{await navigator.clipboard.writeText(text);if(!signal?.aborted)toast('승인본을 복사했습니다. EMR 환자와 붙여넣을 위치를 다시 확인해 주세요.');}catch{if(signal?.aborted)return;$('#copy-fallback').innerHTML=`<label for="copy-text">자동 복사가 허용되지 않았습니다. 승인본을 직접 선택해 복사해 주세요.</label><textarea id="copy-text" rows="8" readonly>${esc(text)}</textarea>`;$('#copy-text').select();}
+  try{await navigator.clipboard.writeText(text);if(!signal?.aborted)toast('승인본을 복사했습니다. EMR 환자와 붙여넣을 위치를 다시 확인해 주세요.');}catch{if(signal?.aborted)return;$('#copy-fallback').innerHTML=`<label for="copy-text">자동 복사가 허용되지 않았습니다. 승인본을 직접 선택해 복사해 주세요.</label><textarea id="copy-text" rows="8" readonly>${esc(text)}</textarea>`;$('#copy-text').focus();$('#copy-text').select();}
 }
 async function next(){
   const signal=cloudRequests?.signal;
@@ -285,7 +300,7 @@ async function next(){
       audioBlob=null;
     } catch (error) {
       if (signal?.aborted || !cloud || !submission || error.existingSubmissionId !== submission.id) throw error;
-      submission.conflict = `첫 제출이 이미 접수되었습니다 (접수 번호 ${submission.id.slice(0,8).toUpperCase()}). 수정한 내용은 이 화면에 유지되며 접수본에는 반영되지 않았습니다.`;
+      submission.conflict = `첫 제출이 이미 접수되었습니다 (접수 번호 ${submission.id.slice(0,8).toUpperCase()}). 의료진 공간에서 첫 접수본을 확인할 수 있습니다. 이후 수정 내용은 이 화면에 남아 있습니다.`;
       showSubmissionConflict();
       return;
     } finally { if(!signal?.aborted)busy=false; }
@@ -301,7 +316,38 @@ $('#app').addEventListener('change',async e=>{const t=e.target;if(['petId','visi
   }
   updateLive();
 }});
-$('#app').addEventListener('submit',async e=>{if(e.target.id!=='login-form')return;e.preventDefault();const signal=cloudRequests?.signal;try{const d=new FormData(e.target);const login=cloud?await api('/api/session',{headers:{'X-Demo-Role':d.get('role')}}):await api('/api/login',{method:'POST',body:{role:d.get('role'),code:d.get('code')}});if(cloud)items=(await api('/api/intakes',{headers:{'X-Demo-Role':login.role}})).items;session={...session,...login};if(!cloud||!submission||receipt){submission=null;form=blank();receipt=null;step=0;audioBlob=null;}if(!cloud)await refresh();render();top();}catch(err){if(!signal?.aborted)$('#login-error').textContent=err.message;}});
+$('#app').addEventListener('submit', async e => {
+  if (e.target.id !== 'login-form') return;
+  e.preventDefault();
+  if (cloudActionPending) return;
+  const signal = cloudRequests?.signal;
+  const button = e.target.querySelector('[type="submit"]');
+  if (cloud) {
+    cloudActionPending = true;
+    button.disabled = true;
+  }
+  try {
+    const data = new FormData(e.target);
+    const headers = { 'X-Demo-Role': data.get('role') };
+    const login = cloud ? await api('/api/session', { headers })
+      : await api('/api/login', { method: 'POST', body: { role: data.get('role'), code: data.get('code') } });
+    if (cloud) items = (await api('/api/intakes', { headers })).items;
+    session = { ...session, ...login };
+    if (!cloud) {
+      form = blank(); receipt = null; step = 0; audioBlob = null;
+      await refresh();
+    }
+    render();
+    top();
+  } catch (error) {
+    if (!signal?.aborted) $('#login-error').textContent = error.message;
+  } finally {
+    if (!signal?.aborted && cloud) {
+      cloudActionPending = false;
+      button.disabled = false;
+    }
+  }
+});
 $('#app').addEventListener('click',async e=>{
   const button=e.target.closest('button');if(!button||button.disabled||busy||cloudActionPending)return;button.disabled=true;
   const signal=cloudRequests?.signal;
@@ -328,7 +374,7 @@ $('#app').addEventListener('click',async e=>{
     if(action==='cloud-auth')connectCloud();
     if(action==='next')await next();
     if(action==='back'){await stopVoice();if(signal?.aborted)return;step=Math.max(0,step-1);render();top();}
-    if(action==='guardian'){await stopVoice();if(signal?.aborted)return;if(session.role!=='guardian'){if(cloud){session={...session,role:'guardian'};reviewEdits.clear();}else{await api('/api/logout',{method:'POST',body:{}});session=await api('/api/session');form=blank();receipt=null;audioBlob=null;step=0;}selected=null;items=[];auditOpen=false;}view='guardian';render();top();}
+    if(action==='guardian'){await stopVoice();if(signal?.aborted)return;if(session.role!=='guardian'){if(cloud){syncReview();session={...session,role:'guardian'};}else{await api('/api/logout',{method:'POST',body:{}});session=await api('/api/session');form=blank();receipt=null;audioBlob=null;step=0;}selected=null;items=[];auditOpen=false;}view='guardian';render();top();}
     if(action==='staff'){await stopVoice();if(signal?.aborted)return;view='staff';if(session.role!=='guardian')await refresh();render();top();}
     if(action==='logout'){guardianChat=null;await stopVoice();if(signal?.aborted)return;if(cloud){clearCloud();return;}await api('/api/logout',{method:'POST',body:{}});session=await api('/api/session');selected=null;items=[];auditOpen=false;form=blank();receipt=null;audioBlob=null;view='guardian';step=0;render();}
     if(action==='voice')await startVoice();
@@ -347,15 +393,34 @@ $('#app').addEventListener('click',async e=>{
       selected=null;render();
       $(`[data-open="${CSS.escape(id)}"]`)?.focus();
     }
-    if(action==='approve')await review('approved');
-    if(action==='hold')await review('held');
+    if(action==='approve')await review('approved',button);
+    if(action==='hold')await review('held',button);
     if(['delete-own','delete-record','delete-own-audio','delete-audio'].includes(action)){
       const isAudio=action.includes('audio');if(!confirm(isAudio?'보관한 시험 음성을 즉시 삭제할까요?':cloud?'가상 문진과 검토 이력을 삭제할까요? 이 작업은 되돌릴 수 없습니다.':'가상 문진과 음성을 삭제할까요? 이 작업은 되돌릴 수 없습니다.'))return;
       const id=action.includes('own')?receipt.id:selected.id;
       if(!isAudio && klatRooms.has(id)){await klatRequest(klatRooms.get(id),'DELETE');klatRooms.delete(id);}
       await api(`/api/intakes/${id}${isAudio?'/audio':''}`,{method:'DELETE',body:cloud&&action==='delete-record'?{version:selected.version}:{}});
       if(!isAudio && guardianChat===id)guardianChat=null;
-      if(action==='delete-own'){submission=null;receipt=null;form=blank();step=0;}if(action==='delete-record'){reviewEdits.delete(id);selected=null;if(cloud){if(submission?.id===id)submission=null;items=items.filter(item=>item.id!==id);}else await refresh();}if(action==='delete-audio')selected=await api(`/api/intakes/${id}`);if(action==='delete-own-audio')receipt.audioExpiresAt=null;render();toast(isAudio?'음성 원본을 삭제했습니다.':cloud?'문진과 검토 이력을 삭제했습니다.':'문진과 음성을 삭제했습니다.');
+      if (action === 'delete-own' || (cloud && action === 'delete-record' && receipt?.id === id)) {
+        receipt = null;
+        form = blank();
+        step = 0;
+        audioBlob = null;
+      }
+      if (action === 'delete-own' || (cloud && action === 'delete-record' && submission?.id === id)) {
+        submission = null;
+      }
+      if (action === 'delete-record') {
+        reviewEdits.delete(id);
+        selected = null;
+        if (cloud) items = items.filter(item => item.id !== id);
+        else await refresh();
+      }
+      if (action === 'delete-audio') selected = await api(`/api/intakes/${id}`);
+      if (action === 'delete-own-audio') receipt.audioExpiresAt = null;
+      render();
+      if (cloud) top();
+      toast(isAudio?'음성 원본을 삭제했습니다.':cloud?'문진과 검토 이력을 삭제했습니다.':'문진과 음성을 삭제했습니다.');
     }
     if(action==='play-audio'){const path=`/api/intakes/${selected.id}/audio`;let blob;if(demo){blob=demo.request(path);}else{const res=await fetch(path);if(!res.ok)throw new Error('음성이 없거나 보관 기간이 지났습니다.');blob=await res.blob();}if(playbackURL)URL.revokeObjectURL(playbackURL);const url=URL.createObjectURL(blob);playbackURL=url;$('#audio-player').innerHTML='<audio controls></audio>';const el=$('#audio-player audio');el.src=url;el.onended=()=>{URL.revokeObjectURL(url);playbackURL=null;el.removeAttribute('src');};el.play().catch(()=>{});}
     if(action==='audit'){auditOpen=!auditOpen;render();if(auditOpen){const data=await api('/api/audit');$('#audit-content').innerHTML=`<div class="table-scroll"><table><thead><tr><th>시각</th><th>역할·시험 식별자</th><th>작업</th><th>대상</th></tr></thead><tbody>${data.items.map(x=>`<tr><td>${date(x.at)}</td><td>${esc(x.actor)}</td><td>${esc(x.action)}</td><td>${esc(x.target.slice(0,8))}</td></tr>`).join('')}</tbody></table></div>`;$('.audit').scrollIntoView({behavior:'smooth'});}}

@@ -32,7 +32,7 @@ test('idle reset discards a delayed detail response from the previous cloud acco
   const record = { id: 'synthetic-account-a-record' };
   const appState = await runInNewContext(
     '(async () => {' + source.replace(/^import .*\n/, '') +
-    '\nreturn { selected: () => selected }; })()',
+    '\nreturn { selected: () => selected, complaint: () => form.complaint }; })()',
     {
       ...engine, document, location: { search: '?cloud=1' }, URLSearchParams, AbortController,
       FormData: class { get() { return 'vet'; } },
@@ -60,14 +60,19 @@ test('idle reset discards a delayed detail response from the previous cloud acco
   }
   async function openInbox() {
     await click({ action: 'staff' });
-    await handlers.submit({ target: { id: 'login-form' }, preventDefault() {} });
+    await handlers.submit({ target: { id: 'login-form', querySelector: () => ({}) }, preventDefault() {} });
   }
 
   await connect('synthetic-a');
+  handlers.input({ target: { name: 'complaint', value: '가상 문진 입력', dataset: {} } });
+  await openInbox();
+  await click({ action: 'guardian' });
+  assert.equal(appState.complaint(), '가상 문진 입력');
   await openInbox();
   const opening = click({ open: record.id }).catch(error => error);
   await idle();
   await connect('synthetic-b');
+  assert.equal(appState.complaint(), '');
   releaseDetail(record);
   const result = await opening;
   assert.equal(appState.selected(), null, 'the delayed detail must not enter the next account state');
