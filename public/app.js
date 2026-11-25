@@ -2,6 +2,7 @@ import { PETS, CATEGORIES, RISKS, CONSENT_VERSION, SAFETY, questions, assess, ex
 const pages = document.documentElement.hasAttribute('data-static-demo');
 const cloud = pages && new URLSearchParams(location.search).get('cloud') === '1';
 let cloudToken = '', cloudScope = '', submission, cloudActionPending = false;
+let cloudRequests = cloud ? new AbortController() : null;
 const reviewEdits = new Map();
 const demo = pages && !cloud ? await import('/pages/demo.mjs') : null;
 const $=s=>document.querySelector(s);
@@ -83,7 +84,15 @@ async function openChat(id) {
 
 let speech=null,recorder=null,stream=null,audioBlob=null,voiceTimer=null,listening=false,stopRecordingPromise=null;
 function toast(text,error=false){const el=$('#toast');el.textContent=text;el.className=error?'show error':'show';clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.className='',5000);}
-async function api(path,options={}){if(demo)return demo.request(path,options);const res=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(cloud?{Authorization:'Bearer '+cloudToken,'X-Demo-Role':session?.role||'guardian'}:{'X-CSRF-Token':session?.csrf||''}),...options.headers},body:options.body?JSON.stringify(options.body):undefined});const data=await res.json();if(!res.ok)throw Object.assign(new Error(data.error||'요청 처리에 실패했습니다.'),{existingSubmissionId:data.existingSubmissionId});return data;}
+async function api(path,options={}){
+  if(demo)return demo.request(path,options);
+  const signal=cloudRequests?.signal;
+  const res=await fetch(path,{...options,...(signal?{signal}:{}),headers:{'Content-Type':'application/json',...(cloud?{Authorization:'Bearer '+cloudToken,'X-Demo-Role':session?.role||'guardian'}:{'X-CSRF-Token':session?.csrf||''}),...options.headers},body:options.body?JSON.stringify(options.body):undefined});
+  const data=await res.json();
+  signal?.throwIfAborted();
+  if(!res.ok)throw Object.assign(new Error(data.error||'요청 처리에 실패했습니다.'),{existingSubmissionId:data.existingSubmissionId});
+  return data;
+}
 function connectCloud() {
   if ($('#cloud-auth')) return;
   const dialog = document.createElement('dialog');
@@ -113,6 +122,12 @@ function connectCloud() {
   dialog.showModal();
 }
 function clearCloud() {
+  cloudRequests.abort();
+  cloudRequests=new AbortController();
+  busy=false;cloudActionPending=false;filter='all';query='';
+  clearTimeout(toast.timer);
+  const notice=$('#toast');
+  notice.textContent='';notice.className='';
   cloudToken='';cloudScope='';session=null;submission=null;reviewEdits.clear();
   form=blank();receipt=null;selected=null;items=[];audioBlob=null;auditOpen=false;step=0;view='guardian';
   $('#app').replaceChildren();
@@ -164,7 +179,8 @@ async function stopVoice(){
   stream?.getTracks().forEach(t=>t.stop());stream=null;recorder=null;
 }
 async function startVoice(){
-  if(listening){await stopVoice();render();return;}
+  const signal=cloudRequests?.signal;
+  if(listening){await stopVoice();if(!signal?.aborted)render();return;}
   if(!form.consents.voice){toast('첫 단계에서 선택 음성 처리 동의를 체크해 주세요.',true);return;}
   const Speech=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!Speech){toast('이 브라우저는 기기 내 한국어 음성 인식을 지원하지 않습니다. 아래 입력란에 작성해 주세요.',true);$('#complaint')?.focus();return;}
@@ -175,6 +191,7 @@ async function startVoice(){
     if (Speech.available) {
       const options = { langs: ['ko-KR'], processLocally: true };
       const availability = await Speech.available(options);
+      if(signal?.aborted)return;
       if (availability === 'downloadable' && Speech.install) {
         const message = $('#voice-message');
         if (!message) return;
@@ -185,8 +202,8 @@ async function startVoice(){
           install.disabled = true;
           try {
             const ready = await Speech.install(options);
-            toast(ready ? '설치했습니다. 음성으로 이야기하기를 다시 눌러 주세요.' : '한국어 팩을 설치하지 못했습니다.', !ready);
-          } catch { toast('한국어 팩을 설치하지 못했습니다. 텍스트로 입력해 주세요.', true); }
+            if(!signal?.aborted)toast(ready ? '설치했습니다. 음성으로 이야기하기를 다시 눌러 주세요.' : '한국어 팩을 설치하지 못했습니다.', !ready);
+          } catch { if(!signal?.aborted)toast('한국어 팩을 설치하지 못했습니다. 텍스트로 입력해 주세요.', true); }
           finally { install.remove(); }
         };
         message.replaceChildren(install);
@@ -200,11 +217,11 @@ async function startVoice(){
       recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};recorder.onstop=()=>{const blob=new Blob(chunks,{type:recorder.mimeType.split(';')[0]});audioBlob=form.consents.retainAudio&&blob.size<=1000000?blob:null;if(blob.size>1000000)toast('원본이 1MB를 넘어 보관하지 않습니다. 인식된 글은 유지됩니다.',true);};recorder.start();
     }
     speech=r;listening=true;
-    r.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++)if(e.results[i].isFinal)form.complaint=(form.complaint+' '+e.results[i][0].transcript).trim().slice(0,3000);if($('#complaint'))$('#complaint').value=form.complaint;updateLive();};
-    r.onerror=async()=>{await stopVoice();render();toast('음성 인식을 완료하지 못했습니다. 인식된 글을 확인하고 텍스트로 이어가 주세요.',true);};
-    r.onend=async()=>{if(listening){await stopVoice();render();}};
-    r.start();voiceTimer=setTimeout(async()=>{await stopVoice();render();toast('60초 입력을 마쳤습니다. 인식된 내용을 확인해 주세요.');},60000);render();
-  } catch(e){await stopVoice();render();toast(e.message||'마이크 사용에 실패했습니다. 텍스트로 이어가 주세요.',true);}
+    r.onresult=e=>{if(signal?.aborted)return;for(let i=e.resultIndex;i<e.results.length;i++)if(e.results[i].isFinal)form.complaint=(form.complaint+' '+e.results[i][0].transcript).trim().slice(0,3000);if($('#complaint'))$('#complaint').value=form.complaint;updateLive();};
+    r.onerror=async()=>{if(signal?.aborted)return;await stopVoice();if(signal?.aborted)return;render();toast('음성 인식을 완료하지 못했습니다. 인식된 글을 확인하고 텍스트로 이어가 주세요.',true);};
+    r.onend=async()=>{if(listening&&!signal?.aborted){await stopVoice();if(!signal?.aborted)render();}};
+    r.start();voiceTimer=setTimeout(async()=>{await stopVoice();if(signal?.aborted)return;render();toast('60초 입력을 마쳤습니다. 인식된 내용을 확인해 주세요.');},60000);render();
+  } catch(e){if(signal?.aborted)return;await stopVoice();if(signal?.aborted)return;render();toast(e.message||'마이크 사용에 실패했습니다. 텍스트로 이어가 주세요.',true);}
 }
 function updateLive(){if($('#live-risk'))$('#live-risk').innerHTML=liveRisk();if($('#char-count'))$('#char-count').textContent=`${form.complaint.length}/3,000`;}
 function syncReview(){
@@ -219,10 +236,11 @@ async function review(status){
   syncReview();const w=selected.working;
   if(cloud)reviewEdits.set(selected.id,w);
   const panel=$('#review-panel');
+  const signal=cloudRequests?.signal;
   if(cloud){busy=true;panel.inert=true;}
   let updated;
   try{updated=await api(`/api/intakes/${selected.id}/review`,{method:'POST',body:{...w,version:selected.version,status,confirmed:$('#source-confirmed').checked,riskAcknowledged:$('#risk-confirmed')?.checked||false}});
-  }finally{if(cloud){busy=false;panel.inert=false;}}
+  }finally{if(cloud&&!signal.aborted){busy=false;panel.inert=false;}}
   reviewEdits.delete(updated.id);
   selected=updated;
   if(cloud)items=items.map(item=>item.id===updated.id?{...item,status:updated.status,version:updated.version}:item);
@@ -230,14 +248,16 @@ async function review(status){
   render();toast(status==='approved'?'수의사 승인 완료. 승인본을 복사할 수 있습니다.':'보류했습니다. 복사는 계속 잠겨 있습니다.');$('#review-panel')?.scrollIntoView({block:'start'});
 }
 async function exportRecord(kind){
+  const signal=cloudRequests?.signal;
   $('#copy-fallback').replaceChildren();
   if($('#review-hpi').value!==selected.review.hpi||$('#review-soapS').value!==selected.review.soapS){toast('승인 후 수정된 내용이 있습니다. 다시 승인한 뒤 복사해 주세요.',true);return;}
   const {text}=await api(`/api/intakes/${selected.id}/export`,{method:'POST',body:{kind,version:selected.version}});
-  try{await navigator.clipboard.writeText(text);toast('승인본을 복사했습니다. EMR 환자와 붙여넣을 위치를 다시 확인해 주세요.');}catch{$('#copy-fallback').innerHTML=`<label for="copy-text">자동 복사가 허용되지 않았습니다. 승인본을 직접 선택해 복사해 주세요.</label><textarea id="copy-text" rows="8" readonly>${esc(text)}</textarea>`;$('#copy-text').select();}
+  try{await navigator.clipboard.writeText(text);if(!signal?.aborted)toast('승인본을 복사했습니다. EMR 환자와 붙여넣을 위치를 다시 확인해 주세요.');}catch{if(signal?.aborted)return;$('#copy-fallback').innerHTML=`<label for="copy-text">자동 복사가 허용되지 않았습니다. 승인본을 직접 선택해 복사해 주세요.</label><textarea id="copy-text" rows="8" readonly>${esc(text)}</textarea>`;$('#copy-text').select();}
 }
 async function next(){
+  const signal=cloudRequests?.signal;
   if(step===0){if(!form.synthetic||!form.consents.privacy)throw new Error('가상 정보 사용 확인과 필수 정보 처리 동의가 필요합니다.');}
-  if(step===1){await stopVoice();if(!form.complaint.trim()){$('#complaint').focus();throw new Error('증상을 말하거나 직접 입력해 주세요.');}const allowed=new Set(questions(form.category,form.complaint,form.visitType,form.answers).map(q=>q.id));form.answers=Object.fromEntries(Object.entries(form.answers).filter(([k])=>allowed.has(k)));}
+  if(step===1){await stopVoice();if(signal?.aborted)return;if(!form.complaint.trim()){$('#complaint').focus();throw new Error('증상을 말하거나 직접 입력해 주세요.');}const allowed=new Set(questions(form.category,form.complaint,form.visitType,form.answers).map(q=>q.id));form.answers=Object.fromEntries(Object.entries(form.answers).filter(([k])=>allowed.has(k)));}
   if(step===2){const empty=questions(form.category,form.complaint,form.visitType,form.answers).find(q=>!form.answers[q.id]?.trim());if(empty){if(!$(`#q-${empty.id}`)){render();toast('답변 내용에 따라 후속 질문을 추가했습니다.');}$(`#q-${empty.id}`)?.focus();throw new Error('모든 질문에 답해 주세요. 모르면 “모름”이라고 적을 수 있습니다.');}}
   if(step===3){
     const unanswered=RISKS.find(r=>!form.risks[r.id]);
@@ -264,11 +284,11 @@ async function next(){
       if(demo)guardianChat=receipt.id;
       audioBlob=null;
     } catch (error) {
-      if (!cloud || !submission || error.existingSubmissionId !== submission.id) throw error;
+      if (signal?.aborted || !cloud || !submission || error.existingSubmissionId !== submission.id) throw error;
       submission.conflict = `첫 제출이 이미 접수되었습니다 (접수 번호 ${submission.id.slice(0,8).toUpperCase()}). 수정한 내용은 이 화면에 유지되며 접수본에는 반영되지 않았습니다.`;
       showSubmissionConflict();
       return;
-    } finally { busy=false; }
+    } finally { if(!signal?.aborted)busy=false; }
     render();top();return;
   }
   step++;render();top();
@@ -281,9 +301,10 @@ $('#app').addEventListener('change',async e=>{const t=e.target;if(['petId','visi
   }
   updateLive();
 }});
-$('#app').addEventListener('submit',async e=>{if(e.target.id!=='login-form')return;e.preventDefault();try{const d=new FormData(e.target);const login=cloud?await api('/api/session',{headers:{'X-Demo-Role':d.get('role')}}):await api('/api/login',{method:'POST',body:{role:d.get('role'),code:d.get('code')}});if(cloud)items=(await api('/api/intakes',{headers:{'X-Demo-Role':login.role}})).items;session={...session,...login};if(!cloud||!submission||receipt){submission=null;form=blank();receipt=null;step=0;audioBlob=null;}if(!cloud)await refresh();render();top();}catch(err){$('#login-error').textContent=err.message;}});
+$('#app').addEventListener('submit',async e=>{if(e.target.id!=='login-form')return;e.preventDefault();const signal=cloudRequests?.signal;try{const d=new FormData(e.target);const login=cloud?await api('/api/session',{headers:{'X-Demo-Role':d.get('role')}}):await api('/api/login',{method:'POST',body:{role:d.get('role'),code:d.get('code')}});if(cloud)items=(await api('/api/intakes',{headers:{'X-Demo-Role':login.role}})).items;session={...session,...login};if(!cloud||!submission||receipt){submission=null;form=blank();receipt=null;step=0;audioBlob=null;}if(!cloud)await refresh();render();top();}catch(err){if(!signal?.aborted)$('#login-error').textContent=err.message;}});
 $('#app').addEventListener('click',async e=>{
   const button=e.target.closest('button');if(!button||button.disabled||busy||cloudActionPending)return;button.disabled=true;
+  const signal=cloudRequests?.signal;
   if(cloud)cloudActionPending=true;
   try {
     if(button.dataset.category){form.category=button.dataset.category;render();return;}
@@ -306,10 +327,10 @@ $('#app').addEventListener('click',async e=>{
     const action=button.dataset.action;
     if(action==='cloud-auth')connectCloud();
     if(action==='next')await next();
-    if(action==='back'){await stopVoice();step=Math.max(0,step-1);render();top();}
-    if(action==='guardian'){await stopVoice();if(session.role!=='guardian'){if(cloud){session={...session,role:'guardian'};reviewEdits.clear();}else{await api('/api/logout',{method:'POST',body:{}});session=await api('/api/session');form=blank();receipt=null;audioBlob=null;step=0;}selected=null;items=[];auditOpen=false;}view='guardian';render();top();}
-    if(action==='staff'){await stopVoice();view='staff';if(session.role!=='guardian')await refresh();render();top();}
-    if(action==='logout'){guardianChat=null;await stopVoice();if(cloud){clearCloud();return;}await api('/api/logout',{method:'POST',body:{}});session=await api('/api/session');selected=null;items=[];auditOpen=false;form=blank();receipt=null;audioBlob=null;view='guardian';step=0;render();}
+    if(action==='back'){await stopVoice();if(signal?.aborted)return;step=Math.max(0,step-1);render();top();}
+    if(action==='guardian'){await stopVoice();if(signal?.aborted)return;if(session.role!=='guardian'){if(cloud){session={...session,role:'guardian'};reviewEdits.clear();}else{await api('/api/logout',{method:'POST',body:{}});session=await api('/api/session');form=blank();receipt=null;audioBlob=null;step=0;}selected=null;items=[];auditOpen=false;}view='guardian';render();top();}
+    if(action==='staff'){await stopVoice();if(signal?.aborted)return;view='staff';if(session.role!=='guardian')await refresh();render();top();}
+    if(action==='logout'){guardianChat=null;await stopVoice();if(signal?.aborted)return;if(cloud){clearCloud();return;}await api('/api/logout',{method:'POST',body:{}});session=await api('/api/session');selected=null;items=[];auditOpen=false;form=blank();receipt=null;audioBlob=null;view='guardian';step=0;render();}
     if(action==='voice')await startVoice();
     if(action==='sample-complaint'){form.complaint='어제 저녁부터 두 번 토했어요. 오늘 아침 사료를 절반 정도 먹었고 평소보다 기운이 조금 없어요.';render();}
     if(action==='sample-answers'){const defaults={onset:'가상 답변: 어제 오후 8시',course:'가상 답변: 어제 1회, 오늘 아침 1회. 이후 관찰 중',daily:'가상 답변: 식사 절반, 물과 소변 평소와 비슷함',meds:'없음',history:'모름',vomit:'가상 답변: 노란 액체 2회, 피는 관찰 못함',exposure:'가상 답변: 최근 사료 변경 없음',followup:'가상 답변: 지난 진료와 다른 증상'};for(let pass=0;pass<2;pass++)for(const q of questions(form.category,form.complaint,form.visitType,form.answers))form.answers[q.id]=defaults[q.id]||'모름';render();toast('가상 답변을 채웠습니다. 시험 목적에 맞게 수정해 주세요.');}
@@ -338,7 +359,7 @@ $('#app').addEventListener('click',async e=>{
     }
     if(action==='play-audio'){const path=`/api/intakes/${selected.id}/audio`;let blob;if(demo){blob=demo.request(path);}else{const res=await fetch(path);if(!res.ok)throw new Error('음성이 없거나 보관 기간이 지났습니다.');blob=await res.blob();}if(playbackURL)URL.revokeObjectURL(playbackURL);const url=URL.createObjectURL(blob);playbackURL=url;$('#audio-player').innerHTML='<audio controls></audio>';const el=$('#audio-player audio');el.src=url;el.onended=()=>{URL.revokeObjectURL(url);playbackURL=null;el.removeAttribute('src');};el.play().catch(()=>{});}
     if(action==='audit'){auditOpen=!auditOpen;render();if(auditOpen){const data=await api('/api/audit');$('#audit-content').innerHTML=`<div class="table-scroll"><table><thead><tr><th>시각</th><th>역할·시험 식별자</th><th>작업</th><th>대상</th></tr></thead><tbody>${data.items.map(x=>`<tr><td>${date(x.at)}</td><td>${esc(x.actor)}</td><td>${esc(x.action)}</td><td>${esc(x.target.slice(0,8))}</td></tr>`).join('')}</tbody></table></div>`;$('.audit').scrollIntoView({behavior:'smooth'});}}
-  }catch(err){toast(err.message,true);}finally{cloudActionPending=false;if(button.isConnected)button.disabled=false;}
+  }catch(err){if(!signal?.aborted)toast(err.message,true);}finally{if(!signal?.aborted)cloudActionPending=false;if(button.isConnected)button.disabled=false;}
 });
 window.addEventListener('pagehide',()=>{speech?.abort();stream?.getTracks().forEach(t=>t.stop());audioBlob=null;});
 if (cloud) connectCloud();
