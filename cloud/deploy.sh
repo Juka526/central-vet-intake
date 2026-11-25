@@ -8,7 +8,7 @@ repo="$region-docker.pkg.dev"
 sha=$(git rev-parse HEAD)
 image="$repo/$project/intake/intake-api:$sha"
 gcloud auth configure-docker "$repo" --project="$project" --quiet
-docker buildx build --platform linux/amd64 --push --tag "$image" cloud
+docker buildx build --platform linux/amd64 --push --tag "$image" -f cloud/Dockerfile .
 run=(--project="$project" --region="$region")
 # Fail if the service listing is unavailable. First deployment cannot use --no-traffic.
 services=$(gcloud run services list "${run[@]}" --format='value(metadata.name)')
