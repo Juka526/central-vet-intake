@@ -101,15 +101,16 @@ function complaint(){return `<div class="section-heading"><span class="eyebrow">
 function liveRisk(answers=form.answers){const flags=assess(form.complaint,answers,form.risks);return flags.length?`<div class="risk-banner" role="alert">${icon('alert')}<div><b>확인이 필요한 위험 징후 표현이 있어요.</b><p>${flags.map(f=>esc(f.label)).join(' · ')}</p><small>키워드 후보에는 과거·부정 표현이 포함될 수 있습니다. 현재 상태가 이와 같거나 불확실하면 병원에 즉시 연락하세요.</small><button class="text-btn" data-action="contact">병원 연락 안내 보기</button></div></div>`:'';}
 function followup() {
   const slots = intakeQuestions(form);
-  const proposed = slots.filter(slot => !slot.answer && slot.candidate);
   const needsClarification = slot => !slot.answer && form.clarifying?.includes(slot.id);
   const requiredClarification = slots.find(slot => slot.required && needsClarification(slot));
-  const candidates = !requiredClarification && proposed.some(slot => slot.required) ? proposed : [];
+  const candidates = requiredClarification ? [] : slots.filter(slot =>
+    !slot.answer && slot.candidate && !needsClarification(slot) && !form.skippedCandidates?.includes(slot.id));
+  const hasRequiredCandidates = candidates.some(slot => slot.required);
   const pending = slots.filter(slot => !slot.answer && (!slot.required || !slot.candidate));
   const current = requiredClarification ?? pending.find(slot => slot.required)
     ?? slots.find(needsClarification) ?? pending.find(slot => slot.id === form.optionalQuestion);
   const clarifying = current && needsClarification(current);
-  const optional = pending.filter(slot => !slot.required);
+  const optional = pending.filter(slot => !slot.required && !candidates.includes(slot));
   const answered = slots.filter(slot => slot.answer);
   return `<div class="section-heading"><h1 tabindex="-1">조금만 더 알려 주세요.</h1></div>
     <div class="quote-box"><span>증상 설명</span><p>${esc(form.complaint)}</p><button class="text-btn" data-action="back">증상 설명 수정</button></div>
@@ -118,8 +119,8 @@ function followup() {
       ${candidates.map(slot => `<div class="question"><label for="candidate-${slot.id}">${esc(slot.label)}${slot.required ? '' : ' <small>(선택)</small>'}</label>
         <small>원문 <q>${esc(slot.candidate.evidence)}</q></small>
         <input id="candidate-${slot.id}" data-candidate="${slot.id}" maxlength="1200" value="${esc(slot.candidate.value)}"></div>`).join('')}
-      <button class="secondary" data-action="confirm-candidates">후보 값 확인</button></section>` :
-      current ? `<div class="question"><label for="q-${current.id}">${esc(current.label)}</label>
+      <button class="secondary" data-action="confirm-candidates">후보 값 확인</button></section>` : ''}
+    ${hasRequiredCandidates ? '' : current ? `<div class="question"><label for="q-${current.id}">${esc(current.label)}</label>
         <small>${current.candidate && !clarifying ? `원문 <q>${esc(current.candidate.evidence)}</q>` : clarifying ? clarification(current) : '모르면 “모르겠어요”, 해당하지 않으면 “없어요”로 답해 주세요.'}</small>
         <textarea id="q-${current.id}" data-current="${current.id}" rows="2" maxlength="1200">${clarifying ? '' : esc(current.candidate?.value ?? '')}</textarea>
         <div class="button-row"><button class="secondary" data-action="save-answer">답변 확인</button>
@@ -128,7 +129,7 @@ function followup() {
       ${answered.map(slot => `<div class="question"><label for="edit-${slot.id}">${esc(slot.label)}</label>
         <input id="edit-${slot.id}" data-edit="${slot.id}" maxlength="1200" value="${esc(slot.answer)}"></div>`).join('')}
       <button class="secondary" data-action="save-edits">수정 확인</button></details>` : ''}
-    ${!candidates.length && !current && optional.length ? `<details><summary>선택 질문에 추가로 답하기</summary><p>아는 항목만 적어 주세요.</p>
+    ${!hasRequiredCandidates && !current && optional.length ? `<details><summary>선택 질문에 추가로 답하기</summary><p>아는 항목만 적어 주세요.</p>
       ${optional.map(slot => `<button class="text-btn" data-optional="${slot.id}">${esc(slot.label)}</button>`).join('')}
       </details>` : ''}
     <button class="text-btn" data-action="sample-answers">가상 답변 채우기</button><div id="live-risk">${liveRisk()}</div>`;
@@ -221,16 +222,17 @@ async function next(){
     form.answers = Object.fromEntries(Object.entries(form.answers).filter(([id]) => allowed.has(id)));
     form.corrections = form.corrections.filter(id => allowed.has(id));
     form.clarifying = (form.clarifying ?? []).filter(id => allowed.has(id));
+    form.skippedCandidates = (form.skippedCandidates ?? []).filter(id => allowed.has(id));
     form.reviewedSource = Object.fromEntries(slots.map(slot => [slot.id,slot.candidate?.value ?? '']));
   }
   if(step===2){
     const slots = intakeQuestions(form);
-    if($('[data-action="confirm-candidates"]')){
+    if($('[data-action="confirm-candidates"]') && slots.some(slot => slot.required && !slot.answer && slot.candidate)){
       $('[data-action="confirm-candidates"]').focus();
       throw new Error('답변 후보를 확인해 주세요.');
     }
     if(slots.some(slot => slot.required && !slot.answer)){
-      $('[data-current]').focus();
+      $('[data-current]')?.focus();
       throw new Error('필수 질문에 답해 주세요.');
     }
   }
@@ -244,7 +246,7 @@ async function next(){
       $('#final-confirm').focus();
       throw new Error('입력 내용 최종 확인을 체크해 주세요.');
     }
-    busy=true;const {reviewedSource,clarifying,optionalQuestion,...payload}=structuredClone(form);payload.finalConfirm=true;if(form.consents.retainAudio&&audioBlob){const bytes=new Uint8Array(await audioBlob.arrayBuffer());let binary='';for(const b of bytes)binary+=String.fromCharCode(b);payload.audio={type:audioBlob.type,base64:btoa(binary)};}try{receipt=await api('/api/intakes',{method:'POST',body:payload});if(demo)guardianChat=receipt.id;audioBlob=null;}finally{busy=false;}render();top();return;}
+    busy=true;const {reviewedSource,clarifying,optionalQuestion,skippedCandidates,...payload}=structuredClone(form);payload.finalConfirm=true;if(form.consents.retainAudio&&audioBlob){const bytes=new Uint8Array(await audioBlob.arrayBuffer());let binary='';for(const b of bytes)binary+=String.fromCharCode(b);payload.audio={type:audioBlob.type,base64:btoa(binary)};}try{receipt=await api('/api/intakes',{method:'POST',body:payload});if(demo)guardianChat=receipt.id;audioBlob=null;}finally{busy=false;}render();top();return;}
   step++;render();top();
 }
 $('#app').addEventListener('input',e=>{const t=e.target;if(['review-hpi','review-soapS','review-note'].includes(t.id))syncReview();if(t.name==='complaint'){form.complaint=t.value;updateLive();}if(t.dataset.current || t.dataset.candidate || t.dataset.edit)updateLive(t);if(t.id==='search'){query=t.value;$('#table-container').innerHTML=table();}});
@@ -308,7 +310,10 @@ $('#app').addEventListener('click',async e=>{
         const id = field.dataset[attribute];
         const slot = slots.get(id);
         if(attribute==='edit' && field.value.trim()===slot.answer) continue;
-        if(attribute==='candidate' && !slot.required && !field.value.trim()) continue;
+        if(attribute==='candidate' && !slot.required && !field.value.trim()){
+          (form.skippedCandidates ??= []).push(id);
+          continue;
+        }
         const result = resolveQuestionAnswer(field.value.trim() || '모르겠어요',false,false,slot);
         if(attribute==='edit' && !form.corrections.includes(id)) form.corrections.push(id);
         if(result.clarify){

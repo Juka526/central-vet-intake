@@ -84,7 +84,7 @@ async function run() {
 
     await page.reload();
     await startLeo();
-    const complaint = '어제 두 번 토했어요. 오늘 한 번 토했어요. 설사는 오늘 세 번 했어요. 둘 다 어제부터였어요. 사료를 절반만 먹었어요.';
+    const complaint = '어제는 두 번, 오늘은 한 번 구토했고 오늘 설사는 세 번 했어요. 둘 다 어제부터였어요. 사료를 절반만 먹었어요.';
     await page.locator('#complaint').fill(complaint);
     await page.locator('[data-category="digestive"]').click();
     await page.locator('[data-category="respiratory"]').click();
@@ -97,6 +97,7 @@ async function run() {
     assert.equal(await page.locator('[data-symptom="diarrhea"]').getAttribute('aria-pressed'), 'true');
     await action('next');
     const yesterday = page.getByLabel('어제 몇 번 토했나요?', { exact:true });
+    assert.equal(await yesterday.inputValue(), '2회');
     await yesterday.fill('두세 번');
     await action('confirm-candidates');
     assert.match(await page.locator('.question:has([data-current]) small').textContent(), /관찰한 횟수/);
@@ -174,6 +175,31 @@ async function run() {
     await openReview();
     assert.match(await page.locator('#review-hpi').inputValue(), /오늘 몇 번 토했나요\? 미확인 \(모르겠어요\)/);
     assert.match(await page.locator('.missing-box').textContent(), /오늘 몇 번 토했나요/);
+
+    for (const confirmWater of [true, false]) {
+      await page.reload();
+      await startLeo();
+      await page.locator('#complaint').fill('구토했어요. 물은 평소와 같아요.');
+      await action('next');
+      const water = page.locator('[data-candidate="water"]');
+      assert.equal(await water.inputValue(), '물은 평소와 같아요');
+      assert.equal(await page.locator('[data-current]').getAttribute('id'), 'q-vomit-onset');
+      if (confirmWater) {
+        await action('confirm-candidates');
+        assert.equal(await water.count(), 0);
+      }
+      await action('next');
+      assert.equal(await page.locator(':focus').getAttribute('id'), 'q-vomit-onset');
+      for (const id of ['vomit-onset','vomit-count','meal']) {
+        assert.equal(await page.locator('[data-current]').getAttribute('id'), 'q-'+id);
+        await action('unknown-answer');
+      }
+      await action('next');
+      await page.locator('.review-details summary').click();
+      const waterAnswer = confirmWater ? '물은 평소와 같아요' : '미확인';
+      assert.ok((await page.locator('.review-details').textContent()).includes('물은 평소와 비교해 얼마나 마셨나요?'+waterAnswer));
+      await submit();
+    }
 
     const { leoCases } = await import('../test/leo-cases.mjs');
     await page.reload();

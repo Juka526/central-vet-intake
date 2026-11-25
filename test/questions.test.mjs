@@ -277,6 +277,24 @@ test('과거 위험 표현과 현재 메스꺼움 시작 시점을 따로 확인
   assert.ok(draft(input).flags.some(flag => flag.id === 'collapse' && flag.level === 'candidate'));
 });
 
+test('쉼표 앞의 날짜별 횟수는 뒤에 명시된 증상에 연결되고 Pages 접수에 필요하다', () => {
+  for (const [phrase, expected] of [['두 번', '2회'], ['두세 번', null]]) {
+    const input = confirm(intake(`어제는 ${phrase}, 오늘은 한 번 구토했고 오늘 설사는 세 번 했어요. 둘 다 어제부터였어요. 사료를 절반만 먹었어요.`));
+    const slots = intakeQuestions(input);
+    const yesterday = slots.find(slot => slot.label === '어제 몇 번 토했나요?');
+    assert.ok(yesterday?.required);
+    assert.equal(yesterday.candidate?.value ?? null, expected);
+    assert.equal(slots.find(slot => slot.label === '오늘 몇 번 토했나요?').answer, '1회');
+    assert.equal(slots.find(slot => slot.label === '오늘 설사가 몇 번 있었나요?').answer, '3회');
+    delete input.answers[yesterday.id];
+    assert.deepEqual(remaining(input).map(slot => slot.id), [yesterday.id]);
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+    input.answers[yesterday.id] = '4회';
+    assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+    assert.match(draft(input).hpi, /어제 몇 번 토했나요\? 4회/);
+  }
+});
+
 test('복합 증상 절에서도 날짜별 필수 횟수 누락을 Pages 접수에서 거부한다', () => {
   const input = confirm(intake('어제 두 번 토했어요. 오늘 아침에 다시 토했는데 기침도 했어요. 사료를 절반만 먹었어요.'));
   const pending = remaining(input);
