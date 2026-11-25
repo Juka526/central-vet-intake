@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {dependencies, parseArgs, runStages} from '../scripts/harness.mjs';
+import {dependencies, dependencySatisfied, parseArgs, runIssueQueue, runStages} from '../scripts/harness.mjs';
 
 function scenario(reviews, remote = ['pass']) {
   const state = {stage:'develop', repairs:0, improved:false, history:[]};
@@ -81,4 +81,41 @@ test('병합 대기 후 검증을 반복하지 않고 같은 PR에서 재개한�
   assert.equal(await runStages(structuredClone(s.state),s.hooks),'done');
   assert.strictEqual(s.pr(),pr);
   assert.equal(pr.merged,true);
+});
+
+
+test('보통 선행 이슈는 닫힌 상태와 병합 PR이 필요하며 #2는 검증된 M0 릴리스도 인정한다',()=>{
+  const manual = {state:'CLOSED',closedByPullRequestsReferences:[]};
+  const merged = {state:'CLOSED',closedByPullRequestsReferences:[{number:20}]};
+  const matchesPr = id => id === 20;
+  const verifiedRelease = tag => tag === 'm0';
+  assert.equal(dependencySatisfied(2,manual,matchesPr,verifiedRelease),true);
+  assert.equal(dependencySatisfied(2,manual,matchesPr,()=>false),false);
+  assert.equal(dependencySatisfied(5,manual,matchesPr,verifiedRelease),false);
+  assert.equal(dependencySatisfied(5,merged,matchesPr,verifiedRelease),true);
+  assert.equal(dependencySatisfied(5,{...merged,state:'OPEN'},matchesPr,verifiedRelease),false);
+});
+
+test('닫힌 PR은 검증 후에도 다시 만들지 않는다',async()=>{
+  const s=scenario([true,true]);
+  s.hooks.publish=async()=>false;
+  s.hooks.ci=()=>assert.fail('A closed PR cannot be checked for merge.');
+  assert.equal(await runStages(s.state,s.hooks),'closed');
+});
+
+test('다른 이슈를 계속 처리하고 앞에서 대기한 의존성을 다시 확인한다',async()=>{
+  const calls=[];
+  let dependencyMerged=false;
+  const incomplete=await runIssueQueue([5,6,7,8],async issue=>{
+    calls.push(issue);
+    if (issue === 5) return 'closed';
+    if (issue === 6) return dependencyMerged ? 'done' : 'waiting for #7';
+    if (issue === 7) {
+      dependencyMerged=true;
+      return 'done';
+    }
+    return 'blocked';
+  });
+  assert.deepEqual(calls,[5,6,7,8,6]);
+  assert.equal(incomplete,true);
 });
