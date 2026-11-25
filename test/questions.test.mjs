@@ -199,24 +199,67 @@ test('로컬 서버 HTTP 처리기에서 위험 응답 검증 후 질문 상태�
   }
 });
 
-test('불확실한 오늘 횟수도 필수이며 Pages 초안에 미확인으로 남는다', () => {
-  const input = confirm(intake('어제 두 번 토했어요. 오늘 한 번 토한 것 같아요. 사료를 절반만 먹었어요.'));
+for (const report of ['오늘 한 번 토한 것 같아요', '오늘은 몇 번인지 모르겠어요']) {
+  test(`불확실한 날짜별 횟수는 필수이며 Pages 초안에 미확인으로 남는다 (${report})`, () => {
+    const input = confirm(intake(`어제 두 번 토했어요. ${report}. 사료를 절반만 먹었어요.`));
+    input.answers['vomit-onset'] = '어제';
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+    const [today] = remaining(input);
+    assert.equal(today.label, '오늘 몇 번 토했나요?');
+    assert.equal(today.candidate, null);
+    input.answers[today.id] = '모르겠어요';
+    const receipt = pages('/api/intakes',{method:'POST',body:input});
+    pages('/api/login',{method:'POST',body:{role:'vet'}});
+    try {
+      const { draft: result } = pages('/api/intakes/'+receipt.id);
+      assert.ok(result.missing.includes(today.label));
+      assert.ok(result.timeline.some(slot => slot.label === today.label && slot.text === '미확인 (모르겠어요)'));
+      assert.ok(result.timeline.some(slot => slot.label === '어제 몇 번 토했나요?' && slot.text === '2회'));
+    } finally {
+      pages('/api/logout');
+    }
+  });
+}
+
+test('문장으로 연결한 어제와 달력 날짜의 횟수를 독립적으로 확인하고 정정한다', () => {
+  const input = confirm(intake('어제 두 번 토했고 11월 25일 한 번 토했어요. 사료를 절반만 먹었어요.'));
+  const counts = () => intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts().map(slot => [slot.label,slot.answer,slot.required]), [
+    ['어제 몇 번 토했나요?', '2회', true],
+    ['11월 25일 몇 번 토했나요?', '1회', true],
+  ]);
+  const [, later] = counts();
+  input.answers[later.id] = '3회';
+  input.corrections = [later.id];
   input.answers['vomit-onset'] = '어제';
+  assert.equal(validateIntake(input), null);
+  assert.deepEqual(counts().map(slot => slot.answer), ['2회','3회']);
+  assert.ok(draft(input).timeline.some(slot => slot.label === later.label && slot.text === '3회 (보호자 정정)'));
+});
+
+test('선택한 구토와 설사에 명시적으로 공유한 시작 시점을 연결한다', () => {
+  const selections = {symptomSelections:['vomit','diarrhea']};
+  const input = confirm(intake('둘 다 어제부터였어요. 사료를 절반만 먹었어요.', selections));
+  assert.deepEqual(intakeQuestions(input).filter(slot => slot.id.endsWith('-onset')).map(slot => [slot.id,slot.answer]), [
+    ['vomit-onset','어제'], ['diarrhea-onset','어제'],
+  ]);
+  assert.deepEqual(remaining(input).map(slot => slot.id), ['vomit-count','diarrhea-count']);
+  const unshared = intake('어제부터였어요. 사료를 절반만 먹었어요.', selections);
+  assert.ok(intakeQuestions(unshared).filter(slot => slot.id.endsWith('-onset')).every(slot => !slot.candidate));
+});
+
+test('언젠가는 시작 시점으로 확정하지 않고 한 번 더 확인한다', () => {
+  const input = confirm(intake('어제 두 번 토했어요. 사료를 절반만 먹었어요.'));
+  const [slot] = remaining(input);
+  assert.equal(slot.id, 'vomit-onset');
+  assert.deepEqual(resolveQuestionAnswer('언젠가',false,false,slot), {answer:'',clarify:true});
+  assert.deepEqual(resolveQuestionAnswer('오늘 오전',true,false,slot), {answer:'오늘 오전',clarify:false});
+  input.answers[slot.id] = '언젠가';
   assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
-  const [today] = remaining(input);
-  assert.equal(today.label, '오늘 몇 번 토했나요?');
-  assert.equal(today.candidate, null);
-  input.answers[today.id] = '모르겠어요';
-  const receipt = pages('/api/intakes',{method:'POST',body:input});
-  pages('/api/login',{method:'POST',body:{role:'vet'}});
-  try {
-    const { draft: result } = pages('/api/intakes/'+receipt.id);
-    assert.ok(result.missing.includes(today.label));
-    assert.ok(result.timeline.some(slot => slot.label === today.label && slot.text === '미확인 (모르겠어요)'));
-    assert.ok(result.timeline.some(slot => slot.label === '어제 몇 번 토했나요?' && slot.text === '2회'));
-  } finally {
-    pages('/api/logout');
-  }
+  input.answers[slot.id] = resolveQuestionAnswer('언젠가',true,false,slot).answer;
+  assert.equal(input.answers[slot.id], '모르겠어요');
+  assert.equal(validateIntake(input), null);
+  assert.ok(draft(input).missing.includes(slot.label));
 });
 
 test('악화 시점과 처음 구토한 시점을 따로 확인한다', () => {
