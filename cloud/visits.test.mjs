@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { test } from 'node:test';
+import { verifyCloudVisits } from '../scripts/verify-cloud-visits.mjs';
 import { fixture } from '../test/fixture.mjs';
 import { makeServer } from './server.mjs';
 import { createVisitsHandler } from './visits.mjs';
@@ -186,7 +187,37 @@ test('Cloud Run visit routes, Firestore transactions, isolation, conflicts and a
 });
 
 const emulator = process.env.FIRESTORE_EMULATOR_HOST && 'http://' + process.env.FIRESTORE_EMULATOR_HOST;
-test('same visit lifecycle against a Firestore emulator', { skip: !emulator }, async t => {
+test('same visit lifecycle against a Firestore emulator', {
+  skip: !emulator && process.env.REQUIRE_FIRESTORE_EMULATOR !== '1',
+}, async t => {
+  assert.ok(emulator, 'FIRESTORE_EMULATOR_HOST is required for emulator verification');
   assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(new URL(emulator).hostname));
   await exercise(t, firestoreVisits({ project, token: async () => null, origin: emulator }));
+});
+
+test('candidate smoke check exercises visit routes and requires IAM denial', async () => {
+  const fake = fakeFirestore();
+  const call = api(firestoreVisits({ project, token: async () => null, request: fake.request }), Date.now);
+  const invitedToken = 'synthetic-invited';
+  const uninvitedToken = 'synthetic-uninvited';
+  const request = async (url, { method, headers, body }) => {
+    if (headers['X-Serverless-Authorization'] !== 'Bearer ' + invitedToken) {
+      return new Response('Denied by synthetic IAM fixture', { status: 403 });
+    }
+    const { pathname } = new URL(url);
+    const response = await call(pathname, {
+      method, role: headers['X-Demo-Role'], subject: 'synthetic-invited',
+      body: body ? JSON.parse(body) : undefined,
+      headers: { 'idempotency-key': headers['Idempotency-Key'] },
+    });
+    return Response.json(response.body, { status: response.status });
+  };
+  const options = { origin: 'https://candidate.example', invitedToken, uninvitedToken };
+  await verifyCloudVisits({ ...options, request });
+  const stored = [...fake.documents.values()];
+  assert.equal(stored.length, 1);
+  assert.deepEqual(Object.keys(JSON.parse(stored[0].fields.payload.stringValue)).sort(), ['deletedVersion', 'expiresAt']);
+  await assert.rejects(verifyCloudVisits({ ...options, request: async () =>
+    Response.json({ error: 'Application denied the request' }, { status: 401 }),
+  }), /IAM boundary/);
 });

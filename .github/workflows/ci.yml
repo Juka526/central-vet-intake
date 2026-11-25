@@ -30,7 +30,11 @@ jobs:
             curl -sS --retry 15 --retry-all-errors --retry-delay 2 --max-time 4 "http://$address/" >/dev/null
           done
           node cloud/emulator-check.mjs
-          node --test cloud/visits.test.mjs
+      - name: Verify visit transactions against the Firestore emulator
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8080
+          REQUIRE_FIRESTORE_EMULATOR: "1"
+        run: node --test cloud/visits.test.mjs
       - run: npm run build:pages
       - run: node --test scripts/verify-pages.mjs
       - name: Exercise the mobile Pages UI with Chrome

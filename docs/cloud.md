@@ -57,3 +57,16 @@ Cloud Run IAM 호출 검사와 비공개 서비스 설정을 유지한다. Pages
 문진과 검토 이력은 같은 Firestore 문서에서 트랜잭션으로 갱신한다. 접수 재시도 식별자와 검토 버전으로 중복 저장을 막는다. 삭제하면 방문 본문과 검토 이력을 즉시 제거하며, 재시도 처리를 위한 만료 시각과 삭제 당시 버전만 원래 만료 시각까지 남긴다. 만료된 문진은 API에서 즉시 접근을 차단한다. 기존 프로젝트에서 `demoIntakeVisits` 컬렉션 그룹의 `expiresAt` TTL 정책을 적용해야 Firestore가 만료 문서를 비동기로 제거한다. 신규 프로젝트는 `cloud/provision.sh`에서 이 정책을 구성한다.
 
 `node --test cloud/visits.test.mjs`는 합성 호출로 계정 분리, 동시 검토, 승인본 복사, 저장 응답 유실과 재시도를 확인한다. Firestore 에뮬레이터가 있으면 `FIRESTORE_EMULATOR_HOST`를 루프백 주소로 설정해 같은 방문 수명 주기를 확인한다.
+
+CI의 **Verify visit transactions against the Firestore emulator** 단계는 에뮬레이터 주소가 없으면 실패한다. 호스트에서도 에뮬레이터를 시작한 뒤 같은 조건으로 실행한다.
+
+```sh
+REQUIRE_FIRESTORE_EMULATOR=1 FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 node --test cloud/visits.test.mjs
+```
+
+Cloud Run 후보 리비전이 검증 대상 커밋과 일치하는지 확인한 뒤, 실행 환경에 아래 값을 주입하고 `node scripts/verify-cloud-visits.mjs`를 실행한다.
+
+- `CLOUD_VISITS_ORIGIN`에는 후보 리비전의 HTTPS `run.app` 오리진을 지정한다.
+- `CLOUD_VISITS_INVITED_TOKEN`과 `CLOUD_VISITS_UNINVITED_TOKEN`에는 각각 호출 권한이 있는 시연 계정과 호출 권한이 없는 계정의 단기 Google ID 토큰을 주입한다. 두 토큰의 audience는 canonical 서비스 URL이다.
+
+스크립트는 IAM 거부, 합성 문진 제출과 재시도, 접수 요약, 승인과 버전 충돌, 승인본 재조회와 HPI·SOAP S 복사, 삭제 후 404를 확인한다. 오류가 발생하면 합성 문진 삭제를 시도한다. 검증 결과는 후보 리비전과 커밋 SHA에 연결해 기록하고, 토큰과 응답 본문은 기록하지 않는다.
