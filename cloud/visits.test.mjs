@@ -274,9 +274,12 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   const start = Date.UTC(2026, 0, 1);
   let time = start;
   const cleanupSubject = 'synthetic-cleaner';
-  const app = () => api(store, () => time, { audio, cleanupSubject });
-  const call = app();
   const subject = 'synthetic-owner';
+  const otherVet = 'synthetic-other';
+  const unapproved = 'synthetic-unapproved';
+  const app = () => api(store, () => time, { audio, cleanupSubject,
+    audioVetSubjects: new Set([subject, otherVet]) });
+  const call = app();
   const vet = { subject, role: 'vet' };
   const guardian = { subject };
   const reception = { subject, role: 'reception' };
@@ -295,7 +298,10 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   const visit = '/api/intakes/' + first;
   const playback = visit + '/audio';
 
-  assert.equal((await submit(first, { ...payload, consents: fixture().consents })).status, 400);
+  for (const [voice, retainAudio] of [[false, false], [true, false], [false, true]]) {
+    const consents = { ...payload.consents, voice, retainAudio };
+    assert.equal((await submit(first, { ...payload, consents })).status, 400);
+  }
   assert.equal(objects.size, 0);
   await submit(randomUUID(), { ...payload, audio: undefined });
   assert.equal(objects.size, 0);
@@ -306,13 +312,24 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   assert.equal(objects.size, 1);
   const changed = { ...payload, audio: { ...payload.audio, base64: Buffer.from('OggSdifferent').toString('base64') } };
   assert.equal((await submit(first, changed)).status, 409);
+  const unapprovedId = randomUUID();
+  const unapprovedVisit = '/api/intakes/' + unapprovedId;
+  assert.equal((await call('/api/intakes', {
+    subject: unapproved, method: 'POST', headers: { 'idempotency-key': unapprovedId }, body: payload,
+  })).status, 201);
+  assert.equal((await call(unapprovedVisit + '/audio', { subject: unapproved, role: 'vet' })).status, 403);
+  assert.equal((await call(unapprovedVisit, { subject: unapproved, role: 'vet' })).body.audioAvailable, undefined);
+  const unconfigured = api(store, () => time, { audio, cleanupSubject });
+  assert.equal((await unconfigured(playback, vet)).status, 403);
+  assert.equal((await remove(unapprovedVisit, { subject: unapproved })).status, 200);
+
   const original = await call(playback, vet);
   assert.equal(original.headers['Content-Type'], 'audio/ogg');
   assert.equal(original.headers['Cache-Control'], 'no-store');
   assert.deepEqual(original.body, bytes);
   assert.equal((await call(playback, guardian)).status, 403);
   assert.equal((await call(playback, reception)).status, 403);
-  assert.equal((await call(playback, { ...vet, subject: 'synthetic-other' })).status, 404);
+  assert.equal((await call(playback, { ...vet, subject: otherVet })).status, 404);
   assert.equal((await call('/api/intake/audio-cleanup', { ...vet, method: 'POST' })).status, 403);
   assert.equal((await remove(playback, reception)).status, 403);
   const record = (await call(visit, vet)).body;

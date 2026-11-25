@@ -39,7 +39,8 @@ async function jsonBody(req, limit = 256_000) {
   return value;
 }
 
-export function createVisitsHandler({ store, audio, cleanupSubject, principal = cloudRunPrincipal, now = Date.now }) {
+export function createVisitsHandler({ store, audio, cleanupSubject, audioVetSubjects = new Set(),
+  principal = cloudRunPrincipal, now = Date.now }) {
   return async function visits(req, path) {
     const subject = await principal(req);
     if (!subject) fail(401, '초대된 계정의 Cloud Run ID 토큰을 입력해 주세요.');
@@ -52,6 +53,7 @@ export function createVisitsHandler({ store, audio, cleanupSubject, principal = 
     const owner = hash(subject);
     const role = req.headers['x-demo-role'] ?? 'guardian';
     if (!roles.includes(role)) fail(403, '시연 역할을 확인해 주세요.');
+    const canPlayAudio = role === 'vet' && audioVetSubjects.has(subject);
     const method = req.method;
 
     if (path === '/api/session' && method === 'GET') {
@@ -91,7 +93,7 @@ export function createVisitsHandler({ store, audio, cleanupSubject, principal = 
         };
         if (!existing && bytes && !original) return {};
         return { value: existing ? undefined : { expiresAt, record, fingerprint, history: [], ...(original && { original }) },
-          result: { status: 201, body: receipt(recordFor(existing ?? { expiresAt, record, original }, now())),
+          result: { status: 201, body: receipt(recordFor(existing ?? { expiresAt, record, original }, now(), true)),
             usedKey: existing ? existing.original?.key : original?.key } };
       };
       if (!bytes) return store.transact(owner, id, submit);
@@ -109,6 +111,7 @@ export function createVisitsHandler({ store, audio, cleanupSubject, principal = 
     const match = recordPath.exec(path);
     if (!match || !idPattern.test(match[1])) fail(404, missing);
     const [, id, action] = match;
+    if (action === 'audio' && method === 'GET' && !canPlayAudio) fail(403, missing);
     const deleting = (!action || action === 'audio') && method === 'DELETE';
     if (role !== 'vet' && !(role === 'guardian' && deleting)) fail(403, '원문·검토·복사는 수의사 전용입니다.');
     const b = method === 'POST' || (deleting && !action && role === 'vet') ? await jsonBody(req) : {};
@@ -128,19 +131,19 @@ export function createVisitsHandler({ store, audio, cleanupSubject, principal = 
         if (!audio || !activeOriginal(existing, now())) fail(404, missing);
         return { result: { original } };
       }
-      if (!action && method === 'GET') return { result: { body: recordFor(existing, now()) } };
+      if (!action && method === 'GET') return { result: { body: recordFor(existing, now(), canPlayAudio) } };
       if (action === 'review' && method === 'POST') {
         const error = reviewError(b, record);
         if (error) fail(400, error);
         const fingerprint = hash(JSON.stringify([b.version, b.status, b.hpi, b.soapS, b.note,
           b.confirmed === true, b.riskAcknowledged === true]));
-        if (existing.history.at(-1)?.fingerprint === fingerprint) return { result: { body: recordFor(existing, now()) } };
+        if (existing.history.at(-1)?.fingerprint === fingerprint) return { result: { body: recordFor(existing, now(), canPlayAudio) } };
         if (b.version !== record.version) fail(409, conflict);
         const updated = applyReview(record, b, '시험 수의사 ' + owner.slice(0, 6), new Date(now()).toISOString());
         const value = { ...existing, record: updated, history: [...existing.history,
           { version: updated.version, status: updated.status, review: updated.review, fingerprint }] };
         if (Buffer.byteLength(JSON.stringify(value)) > 900_000) fail(409, '이 문진의 검토 이력 저장 한도에 도달했습니다.');
-        return { value, result: { body: recordFor(value, now()) } };
+        return { value, result: { body: recordFor(value, now(), canPlayAudio) } };
       }
       if (action === 'export' && method === 'POST') {
         if (b.version !== record.version) fail(409, conflict);
@@ -169,8 +172,8 @@ function activeOriginal(existing, now) {
     Date.parse(existing.expiresAt) > now && !existing.original?.deleted && Date.parse(existing.original?.expiresAt) > now;
 }
 
-function recordFor(existing, now) {
-  const audioAvailable = activeOriginal(existing, now);
+function recordFor(existing, now, includeAudioMetadata) {
+  const audioAvailable = includeAudioMetadata && activeOriginal(existing, now);
   return audioAvailable
     ? { ...existing.record, audioAvailable, audioExpiresAt: existing.original.expiresAt }
     : existing.record;
