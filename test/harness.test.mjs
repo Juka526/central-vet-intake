@@ -93,7 +93,7 @@ test('보통 선행 이슈는 병합 PR이 필요하며 닫힌 #2는 검증된 M
   assert.equal(dependencySatisfied(2,manual,matchesPr,()=>false),false);
   assert.equal(dependencySatisfied(5,manual,matchesPr,verifiedRelease),false);
   assert.equal(dependencySatisfied(5,merged,matchesPr,verifiedRelease),true);
-  assert.equal(dependencySatisfied(5,{...merged,state:'OPEN'},matchesPr,verifiedRelease),true);
+  assert.equal(dependencySatisfied(5,{...merged,state:'OPEN'},matchesPr,verifiedRelease),false);
   assert.equal(dependencySatisfied(2,{...manual,state:'OPEN'},matchesPr,verifiedRelease),false);
 });
 

@@ -99,9 +99,10 @@ function codex(role, cwd, control, prompt) {
 }
 
 export function dependencySatisfied(number, issue, mergedPullRequest, verifiedRelease) {
+  if (issue.state !== 'CLOSED') return false;
   if (issue.closedByPullRequestsReferences.some(pr => mergedPullRequest(pr.number))) return true;
   // The one-time M0 infrastructure check was completed by the verified release.
-  return number === 2 && issue.state === 'CLOSED' && verifiedRelease('m0');
+  return number === 2 && verifiedRelease('m0');
 }
 
 export function hasReleaseEvidence(notes, commit) {
