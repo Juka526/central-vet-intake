@@ -82,30 +82,35 @@ export function createVisitsHandler({ store, audio, cleanupSubject, audioVetSubj
       if (consents.retainAudio) fingerprintInput.push(true, bytes ? [b.audio.type, hash(bytes)] : null);
       const fingerprint = hash(JSON.stringify(fingerprintInput));
       let original;
+      const expiredSubmission = { status: 409, body: { error: '이미 사용한 접수 식별자입니다.' } };
       const submit = existing => {
         if (existing && (!existing.record || Date.parse(existing.expiresAt) <= now()))
-          return { result: { status: 409, body: { error: '이미 사용한 접수 식별자입니다.' } } };
+          return { result: expiredSubmission };
         if (existing && existing.fingerprint !== fingerprint) return {
-          result: { status: 409, body: {
+          result: { status: 409, visit: existing, body: {
             error: '첫 제출이 이미 접수되었습니다. 수정한 내용은 이 화면에 유지됩니다.',
             existingSubmissionId: id,
           } },
         };
         if (!existing && bytes && !original) return {};
-        return { value: existing ? undefined : { expiresAt, record, fingerprint, history: [], ...(original && { original }) },
-          result: { status: 201, body: receipt(recordFor(existing ?? { expiresAt, record, original }, now(), true)),
-            usedKey: existing ? existing.original?.key : original?.key } };
+        const visit = existing ?? { expiresAt, record, fingerprint, history: [], ...(original && { original }) };
+        return { value: existing ? undefined : visit,
+          result: { status: 201, visit, usedKey: visit.original?.key } };
       };
-      if (!bytes) return store.transact(owner, id, submit);
+      const finishSubmission = ({ status, body, visit }) => {
+        const checkedAt = now();
+        if (visit && Date.parse(visit.expiresAt) <= checkedAt) return expiredSubmission;
+        return { status, body: body ?? receipt(recordFor(visit, checkedAt, true)) };
+      };
       const replay = await store.transact(owner, id, submit);
-      if (replay) return replay;
+      if (replay) return finishSubmission(replay);
       const audioExpiresAt = new Date(now() + 3_600_000).toISOString();
       original = { key: audioExpiresAt + '/' + randomUUID(), expiresAt: audioExpiresAt, type: b.audio.type };
       await audio.put(original.key, original.type, bytes);
       // An ambiguous commit may have published this object. Leave it for expiry cleanup.
       const response = await store.transact(owner, id, submit);
       if (response.usedKey !== original.key) await audio.remove(original.key).catch(() => {});
-      return response;
+      return finishSubmission(response);
     }
 
     const match = recordPath.exec(path);

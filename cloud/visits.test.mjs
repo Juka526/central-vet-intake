@@ -347,6 +347,12 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
 
   time += 3_599_999;
   assert.equal((await call(playback, vet)).status, 200);
+  afterRollback = () => { time++; };
+  const expiredAudioReceipt = await submit(first);
+  assert.equal(expiredAudioReceipt.status, 201);
+  assert.equal(expiredAudioReceipt.body.audioExpiresAt, null);
+  afterRollback = undefined;
+  time--;
   assert.equal((await clean()).status, 200);
   assert.equal(objects.size, 1);
   // The clock crosses the deadline while the bucket GET is in flight.
@@ -393,6 +399,17 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   assert.equal(objects.size, 0);
 
   const lastValidTime = start + 86_399_999;
+  time = lastValidTime;
+  assert.equal((await submit(first)).status, 201);
+  afterRollback = () => { time++; };
+  const expiredReceipt = await submit(first);
+  assert.equal(expiredReceipt.status, 409);
+  assert.deepEqual(Object.keys(expiredReceipt.body), ['error']);
+  time = lastValidTime;
+  const expiredConflict = await submit(first, changed);
+  assert.equal(expiredConflict.status, 409);
+  assert.deepEqual(Object.keys(expiredConflict.body), ['error']);
+  afterRollback = undefined;
   time = lastValidTime;
   const approve = body => call(visit + '/review', { ...vet, method: 'POST', body });
   const approval = { version: record.version, status: 'approved', confirmed: true, riskAcknowledged: true,
