@@ -14,7 +14,7 @@ const fail = (status, message) => { throw Object.assign(new Error(message), { st
 // Cloud Run IAM validates this header and strips the signature before forwarding it.
 // Never derive a principal from the ordinary Authorization header or client role.
 export function cloudRunPrincipal(req) {
-  const token = req.headers['x-serverless-authorization']?.match(/^Bearer [\w-]+\.([\w-]+)\.SIGNATURE_REMOVED_BY_GOOGLE$/)?.[1];
+  const token = req.headers['x-serverless-authorization']?.match(/^[Bb][Ee][Aa][Rr][Ee][Rr] [\w-]+\.([\w-]+)\.SIGNATURE_REMOVED_BY_GOOGLE$/)?.[1];
   if (!token) return null;
   try {
     const { sub, iss, exp } = JSON.parse(Buffer.from(token, 'base64url'));

@@ -58,7 +58,7 @@ function fakeFirestore() {
 
 function forwardedToken(subject, exp = Math.floor(Date.now() / 1000) + 3600) {
   const payload = Buffer.from(JSON.stringify({ sub: subject, iss: 'https://accounts.google.com', exp })).toString('base64url');
-  return 'Bearer e30.' + payload + '.SIGNATURE_REMOVED_BY_GOOGLE';
+  return 'bearer e30.' + payload + '.SIGNATURE_REMOVED_BY_GOOGLE';
 }
 
 function api(store, now) {
