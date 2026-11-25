@@ -131,7 +131,7 @@ export function createVisitsHandler({ store, audio, cleanupSubject, audioVetSubj
         if (!audio || !activeOriginal(existing, now())) fail(404, missing);
         return { result: { original } };
       }
-      if (!action && method === 'GET') return { result: { body: recordFor(existing, now(), canPlayAudio) } };
+      if (!action && method === 'GET') return { result: { visit: existing } };
       if (action === 'review' && method === 'POST') {
         const error = reviewError(b, record);
         if (error) fail(400, error);
@@ -152,15 +152,21 @@ export function createVisitsHandler({ store, audio, cleanupSubject, audioVetSubj
       }
       fail(405, '지원하지 않는 요청입니다.');
     });
+    if (result.visit) {
+      const checkedAt = now();
+      if (Date.parse(result.visit.expiresAt) <= checkedAt) fail(404, missing);
+      return { body: recordFor(result.visit, checkedAt, canPlayAudio) };
+    }
     if (result.removeKey) await audio.remove(result.removeKey);
     if (result.original) {
       const { key, type } = result.original;
       const bytes = await audio.get(key);
       if (!bytes) fail(404, missing);
-      await store.transact(owner, id, existing => {
+      const deadline = await store.transact(owner, id, existing => {
         if (!activeOriginal(existing, now()) || existing.original.key !== key) fail(404, missing);
-        return {};
+        return { result: Math.min(Date.parse(existing.expiresAt), Date.parse(existing.original.expiresAt)) };
       });
+      if (deadline <= now()) fail(404, missing);
       return { bytes, type };
     }
     return result;
@@ -178,4 +184,3 @@ function recordFor(existing, now, includeAudioMetadata) {
     ? { ...existing.record, audioAvailable, audioExpiresAt: existing.original.expiresAt }
     : existing.record;
 }
-

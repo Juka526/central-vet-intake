@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { test } from 'node:test';
+import { verifyCloudAudio } from '../scripts/verify-cloud-audio.mjs';
 import { verifyCloudVisits } from '../scripts/verify-cloud-visits.mjs';
 import { fixture } from '../test/fixture.mjs';
 import { makeServer } from './server.mjs';
@@ -239,6 +240,7 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   const objects = new Map();
   let failDelete = false;
   let afterRead;
+  let afterRollback;
   const storageRequest = async (url, options) => {
     assert.equal(options.headers.Authorization, 'Bearer synthetic-runtime');
     const { pathname, searchParams } = new URL(url);
@@ -269,7 +271,11 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
     await afterRead?.();
     return bytes ? new Response(bytes) : new Response(null, { status: 404 });
   };
-  const store = firestoreVisits({ project, token: async () => null, request: fake.request });
+  const store = firestoreVisits({ project, token: async () => null, async request(url, options) {
+    const response = await fake.request(url, options);
+    if (url.endsWith(':rollback')) afterRollback?.();
+    return response;
+  } });
   const audio = privateAudio({ bucket: 'synthetic-private', token: async () => 'synthetic-runtime', request: storageRequest });
   const start = Date.UTC(2026, 0, 1);
   let time = start;
@@ -345,6 +351,12 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   afterRead = () => { time++; };
   assert.equal((await call(playback, vet)).status, 404);
   afterRead = undefined;
+  time--;
+  // The final read has checked expiry, but its rollback is still in flight.
+  let rollbacks = 0;
+  afterRollback = () => { if (++rollbacks === 2) time++; };
+  assert.equal((await call(playback, vet)).status, 404);
+  afterRollback = undefined;
   assert.equal((await call(playback, vet)).status, 404);
   assert.equal((await call(visit, vet)).body.audioAvailable, undefined);
   failDelete = true;
@@ -380,9 +392,43 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
 
   time = start + 86_399_999;
   assert.equal((await call(visit, vet)).status, 200);
-  time++;
+  afterRollback = () => { time++; };
+  assert.equal((await call(visit, vet)).status, 404);
+  afterRollback = undefined;
   assert.equal((await call(visit, vet)).status, 404);
   assert.equal((await call(visit + '/review', { ...vet, method: 'POST', body: {} })).status, 404);
   assert.equal((await call(visit + '/export', { ...vet, method: 'POST', body: {} })).status, 404);
   assert.ok(!(await call('/api/intakes', reception)).body.items.some(item => item.id === first));
+
+  const origin = 'https://candidate.example';
+  let publicBucket = false;
+  const request = async (url, options) => {
+    const target = new URL(url);
+    if (target.origin === origin) {
+      const response = await call(target.pathname, {
+        method: options.method, role: options.headers['X-Demo-Role'],
+        subject: options.headers['X-Serverless-Authorization'].slice('Bearer '.length),
+        body: options.body && JSON.parse(options.body),
+        headers: { 'idempotency-key': options.headers['Idempotency-Key'] },
+      });
+      return Buffer.isBuffer(response.body)
+        ? new Response(response.body, { status: response.status, headers: response.headers })
+        : Response.json(response.body, { status: response.status });
+    }
+    if (target.hostname === 'firestore.googleapis.com') {
+      assert.equal(options.headers.Authorization, 'Bearer synthetic-runtime');
+      const document = fake.documents.get(target.pathname.slice('/v1/'.length));
+      return document ? Response.json(document) : new Response(null, { status: 404 });
+    }
+    assert.equal(target.hostname, 'storage.googleapis.com');
+    if (!options.headers.Authorization && !publicBucket) return new Response(null, { status: 403 });
+    return storageRequest(url, { ...options, headers: { Authorization: 'Bearer synthetic-runtime' } });
+  };
+  const candidate = { origin, project, bucket: 'synthetic-private', vetToken: subject,
+    invitedToken: unapproved, storageToken: 'synthetic-runtime', request };
+  await verifyCloudAudio(candidate);
+  assert.equal(objects.size, 0);
+  publicBucket = true;
+  await assert.rejects(verifyCloudAudio(candidate), /Anonymous object lookup returned 200/);
+  assert.equal(objects.size, 0);
 });
