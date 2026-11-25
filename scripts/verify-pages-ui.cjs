@@ -146,6 +146,7 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
   assert.equal(await page.locator(':focus').getAttribute('data-action'), 'approve');
   assert.equal(await hpi.inputValue(), edited);
   await page.getByRole('button', { name: '최신 기록 다시 열기' }).click();
+  await page.locator('#review-panel .status.held').waitFor();
   await page.getByText('현재 저장본 확인 · 내 수정은 입력란에 유지').waitFor();
   assert.equal(await hpi.inputValue(), edited);
   assert.equal(await page.locator('#source-confirmed').isChecked(), false);
