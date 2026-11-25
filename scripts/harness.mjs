@@ -99,10 +99,14 @@ function codex(role, cwd, control, prompt) {
 }
 
 export function dependencySatisfied(number, issue, mergedPullRequest, verifiedRelease) {
-  if (issue.state !== 'CLOSED') return false;
   if (issue.closedByPullRequestsReferences.some(pr => mergedPullRequest(pr.number))) return true;
   // The one-time M0 infrastructure check was completed by the verified release.
-  return number === 2 && verifiedRelease('m0');
+  return number === 2 && issue.state === 'CLOSED' && verifiedRelease('m0');
+}
+
+export function hasReleaseEvidence(notes, commit) {
+  return notes.split('\n').some(line => line.startsWith('Verified commit ' + commit + ', Cloud Run revision ') &&
+    line.includes(' and Pages deployment ') && line.includes('synthetic Firestore/Storage checks.'));
 }
 
 export async function runIssueQueue(issues, process) {
@@ -141,12 +145,14 @@ async function processIssue(root, issue, gh, ghJson) {
       const linked = ghJson('pr','view',String(prNumber),'--json','mergedAt,baseRefName');
       return linked.baseRefName === base && Boolean(linked.mergedAt);
     }, tag => {
-      const release = ghJson('release','view',tag,'--json','tagName,isDraft,isPrerelease,assets');
-      if (release.tagName !== tag || release.isDraft || release.isPrerelease ||
-        !release.assets.some(asset => asset.name === 'release-notes')) return false;
+      const release = ghJson('release','view',tag,'--json','tagName,isDraft,isPrerelease,body,assets');
+      if (release.tagName !== tag || release.isDraft || release.isPrerelease) return false;
       git(root,'fetch','origin','tag',tag);
-      git(root,'merge-base','--is-ancestor','refs/tags/'+tag+'^{commit}','origin/'+base);
-      return true;
+      const taggedCommit = git(root,'rev-parse','refs/tags/'+tag+'^{commit}');
+      git(root,'merge-base','--is-ancestor',taggedCommit,'origin/'+base);
+      if (hasReleaseEvidence(release.body ?? '',taggedCommit)) return true;
+      return release.assets.some(asset => asset.name === 'release-notes') &&
+        hasReleaseEvidence(gh('release','download',tag,'--pattern','release-notes','--output','-'),taggedCommit);
     });
     if (!complete) return 'waiting for #' + number;
   }

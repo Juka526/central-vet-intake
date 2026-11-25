@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {dependencies, dependencySatisfied, parseArgs, runIssueQueue, runStages} from '../scripts/harness.mjs';
+import {dependencies, dependencySatisfied, hasReleaseEvidence, parseArgs, runIssueQueue, runStages} from '../scripts/harness.mjs';
 
 function scenario(reviews, remote = ['pass']) {
   const state = {stage:'develop', repairs:0, improved:false, history:[]};
@@ -84,7 +84,7 @@ test('병합 대기 후 검증을 반복하지 않고 같은 PR에서 재개한�
 });
 
 
-test('보통 선행 이슈는 닫힌 상태와 병합 PR이 필요하며 #2는 검증된 M0 릴리스도 인정한다',()=>{
+test('보통 선행 이슈는 병합 PR이 필요하며 닫힌 #2는 검증된 M0 릴리스도 인정한다',()=>{
   const manual = {state:'CLOSED',closedByPullRequestsReferences:[]};
   const merged = {state:'CLOSED',closedByPullRequestsReferences:[{number:20}]};
   const matchesPr = id => id === 20;
@@ -93,7 +93,8 @@ test('보통 선행 이슈는 닫힌 상태와 병합 PR이 필요하며 #2는 �
   assert.equal(dependencySatisfied(2,manual,matchesPr,()=>false),false);
   assert.equal(dependencySatisfied(5,manual,matchesPr,verifiedRelease),false);
   assert.equal(dependencySatisfied(5,merged,matchesPr,verifiedRelease),true);
-  assert.equal(dependencySatisfied(5,{...merged,state:'OPEN'},matchesPr,verifiedRelease),false);
+  assert.equal(dependencySatisfied(5,{...merged,state:'OPEN'},matchesPr,verifiedRelease),true);
+  assert.equal(dependencySatisfied(2,{...manual,state:'OPEN'},matchesPr,verifiedRelease),false);
 });
 
 test('닫힌 PR은 검증 후에도 다시 만들지 않는다',async()=>{
@@ -118,4 +119,12 @@ test('다른 이슈를 계속 처리하고 앞에서 대기한 의존성을 다�
   });
   assert.deepEqual(calls,[5,6,7,8,6]);
   assert.equal(incomplete,true);
+});
+
+
+test('운영 릴리스 증적은 태그의 정확한 커밋과 저장 검증을 명시해야 한다',()=>{
+  const notes = 'Verified commit abc123, Cloud Run revision intake-1 and Pages deployment abc. Passed the public page and synthetic Firestore/Storage checks.';
+  assert.equal(hasReleaseEvidence(notes,'abc123'),true);
+  assert.equal(hasReleaseEvidence(notes,'another-commit'),false);
+  assert.equal(hasReleaseEvidence('Verified commit abc123, no storage check','abc123'),false);
 });
