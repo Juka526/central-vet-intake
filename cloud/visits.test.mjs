@@ -6,6 +6,7 @@ import { verifyCloudVisits } from '../scripts/verify-cloud-visits.mjs';
 import { fixture } from '../test/fixture.mjs';
 import { makeServer } from './server.mjs';
 import { createVisitsHandler } from './visits.mjs';
+import { privateAudio } from './audio-store.mjs';
 import { firestoreVisits } from './visits-store.mjs';
 
 const project = 'demo-central-vet';
@@ -61,8 +62,8 @@ function forwardedToken(subject, exp = Math.floor(Date.now() / 1000) + 3600) {
   return 'bearer e30.' + payload + '.SIGNATURE_REMOVED_BY_GOOGLE';
 }
 
-function api(store, now) {
-  const server = makeServer(undefined, createVisitsHandler({ store, now }));
+function api(store, now, options) {
+  const server = makeServer(undefined, createVisitsHandler({ store, now, ...options }));
   return function call(path, { method = 'GET', subject, role, body, headers = {} } = {}) {
     const req = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]);
     Object.assign(req, { method, url: path, headers: {
@@ -71,10 +72,10 @@ function api(store, now) {
       'x-demo-role': role, ...headers,
     } });
     return new Promise(resolve => {
-      let status;
+      let status, responseHeaders;
       server.emit('request', req, {
-        writeHead(code) { status = code; },
-        end(data) { resolve({ status, body: JSON.parse(data) }); },
+        writeHead(code, headers) { status = code; responseHeaders = headers; },
+        end(data) { resolve({ status, headers: responseHeaders, body: Buffer.isBuffer(data) ? data : JSON.parse(data) }); },
       });
     });
   };
@@ -231,4 +232,140 @@ test('candidate smoke check exercises visit routes and requires IAM denial', asy
   await assert.rejects(verifyCloudVisits({ ...options, request: async () =>
     Response.json({ error: 'Application denied the request' }, { status: 401 }),
   }), /IAM boundary/);
+});
+
+test('Cloud audio consent, private playback, exact expiry and idempotent partial deletion', async () => {
+  const fake = fakeFirestore();
+  const objects = new Map();
+  let failDelete = false;
+  let afterRead;
+  const storageRequest = async (url, options) => {
+    assert.equal(options.headers.Authorization, 'Bearer synthetic-runtime');
+    const { pathname, searchParams } = new URL(url);
+    const method = options.method ?? 'GET';
+    if (method === 'POST') {
+      const name = searchParams.get('name');
+      assert.equal(searchParams.get('ifGenerationMatch'), '0');
+      assert.ok(name.startsWith('intake-audio/'));
+      assert.ok(!objects.has(name));
+      objects.set(name, options.body);
+      return Response.json({});
+    }
+    if (pathname.endsWith('/o')) {
+      return Response.json({ items: [...objects.keys()]
+        .filter(name => name.startsWith(searchParams.get('prefix')) && name < searchParams.get('endOffset'))
+        .map(name => ({ name })) });
+    }
+    const key = decodeURIComponent(pathname.split('/').at(-1));
+    if (method === 'DELETE') {
+      if (failDelete) {
+        failDelete = false;
+        return new Response(null, { status: 503 });
+      }
+      return new Response(null, { status: objects.delete(key) ? 204 : 404 });
+    }
+    assert.equal(searchParams.get('alt'), 'media');
+    const bytes = objects.get(key);
+    await afterRead?.();
+    return bytes ? new Response(bytes) : new Response(null, { status: 404 });
+  };
+  const store = firestoreVisits({ project, token: async () => null, request: fake.request });
+  const audio = privateAudio({ bucket: 'synthetic-private', token: async () => 'synthetic-runtime', request: storageRequest });
+  const start = Date.UTC(2026, 0, 1);
+  let time = start;
+  const cleanupSubject = 'synthetic-cleaner';
+  const app = () => api(store, () => time, { audio, cleanupSubject });
+  const call = app();
+  const subject = 'synthetic-owner';
+  const vet = { subject, role: 'vet' };
+  const guardian = { subject };
+  const reception = { subject, role: 'reception' };
+  const clean = () => call('/api/intake/audio-cleanup', { method: 'POST', subject: cleanupSubject });
+  const bytes = Buffer.alloc(1_000_000);
+  bytes.write('OggS');
+  const payload = fixture({
+    consents: { ...fixture().consents, voice: true, retainAudio: true },
+    audio: { type: 'audio/ogg', base64: bytes.toString('base64') },
+  });
+  const submit = (id, body = payload) => call('/api/intakes', {
+    ...guardian, method: 'POST', headers: { 'idempotency-key': id }, body,
+  });
+  const remove = (path, actor = guardian, body) => app()(path, { ...actor, method: 'DELETE', body });
+  const first = randomUUID();
+  const visit = '/api/intakes/' + first;
+  const playback = visit + '/audio';
+
+  assert.equal((await submit(first, { ...payload, consents: fixture().consents })).status, 400);
+  assert.equal(objects.size, 0);
+  await submit(randomUUID(), { ...payload, audio: undefined });
+  assert.equal(objects.size, 0);
+  const competing = await Promise.all([submit(first), submit(first)]);
+  assert.deepEqual(competing.map(result => result.status), [201, 201]);
+  const expiry = new Date(start + 3_600_000).toISOString();
+  assert.deepEqual(competing.map(result => result.body.audioExpiresAt), [expiry, expiry]);
+  assert.equal(objects.size, 1);
+  const changed = { ...payload, audio: { ...payload.audio, base64: Buffer.from('OggSdifferent').toString('base64') } };
+  assert.equal((await submit(first, changed)).status, 409);
+  const original = await call(playback, vet);
+  assert.equal(original.headers['Content-Type'], 'audio/ogg');
+  assert.equal(original.headers['Cache-Control'], 'no-store');
+  assert.deepEqual(original.body, bytes);
+  assert.equal((await call(playback, guardian)).status, 403);
+  assert.equal((await call(playback, reception)).status, 403);
+  assert.equal((await call(playback, { ...vet, subject: 'synthetic-other' })).status, 404);
+  assert.equal((await call('/api/intake/audio-cleanup', { ...vet, method: 'POST' })).status, 403);
+  assert.equal((await remove(playback, reception)).status, 403);
+  const record = (await call(visit, vet)).body;
+  assert.equal(record.audioAvailable, true);
+  assert.equal(record.original, undefined);
+  assert.equal(record.audio, undefined);
+
+  time += 3_599_999;
+  assert.equal((await call(playback, vet)).status, 200);
+  assert.equal((await clean()).status, 200);
+  assert.equal(objects.size, 1);
+  // The clock crosses the deadline while the bucket GET is in flight.
+  afterRead = () => { time++; };
+  assert.equal((await call(playback, vet)).status, 404);
+  afterRead = undefined;
+  assert.equal((await call(playback, vet)).status, 404);
+  assert.equal((await call(visit, vet)).body.audioAvailable, undefined);
+  failDelete = true;
+  assert.equal((await clean()).status, 503);
+  assert.equal(objects.size, 1);
+  assert.equal((await clean()).status, 200);
+  assert.equal(objects.size, 0);
+
+  const second = randomUUID();
+  const secondVisit = '/api/intakes/' + second;
+  fake.failNextCommit('lost-response');
+  assert.equal((await submit(second)).status, 503);
+  assert.equal((await submit(second)).status, 201);
+  assert.equal(objects.size, 1);
+  failDelete = true;
+  assert.equal((await remove(secondVisit + '/audio')).status, 503);
+  assert.equal((await call(secondVisit + '/audio', vet)).status, 404);
+  assert.equal((await call(secondVisit, vet)).status, 200);
+  assert.equal((await remove(secondVisit + '/audio')).status, 200);
+  assert.equal(objects.size, 0);
+  assert.equal((await submit(second)).body.audioExpiresAt, null);
+
+  const third = randomUUID();
+  const thirdVisit = '/api/intakes/' + third;
+  assert.equal((await submit(third)).status, 201);
+  assert.equal((await remove(thirdVisit, vet, { version: 0 })).status, 409);
+  failDelete = true;
+  assert.equal((await remove(thirdVisit, vet, { version: 1 })).status, 503);
+  assert.equal((await call(thirdVisit, vet)).status, 404);
+  assert.equal((await call(thirdVisit + '/audio', vet)).status, 404);
+  assert.equal((await remove(thirdVisit, vet, { version: 1 })).status, 200);
+  assert.equal(objects.size, 0);
+
+  time = start + 86_399_999;
+  assert.equal((await call(visit, vet)).status, 200);
+  time++;
+  assert.equal((await call(visit, vet)).status, 404);
+  assert.equal((await call(visit + '/review', { ...vet, method: 'POST', body: {} })).status, 404);
+  assert.equal((await call(visit + '/export', { ...vet, method: 'POST', body: {} })).status, 404);
+  assert.ok(!(await call('/api/intakes', reception)).body.items.some(item => item.id === first));
 });
