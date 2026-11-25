@@ -295,6 +295,7 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   const bytes = Buffer.alloc(1_000_000);
   bytes.write('OggS');
   const payload = fixture({
+    risks: { ...fixture().risks, breathing: 'yes' },
     consents: { ...fixture().consents, voice: true, retainAudio: true },
     audio: { type: 'audio/ogg', base64: bytes.toString('base64') },
   });
@@ -400,9 +401,14 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
 
   const lastValidTime = start + 86_399_999;
   time = lastValidTime;
-  assert.equal((await submit(first)).status, 201);
-  afterRollback = () => { time++; };
+  const validReceipt = await submit(first);
+  assert.equal(validReceipt.status, 201);
+  assert.deepEqual(validReceipt.body.flags.map(({ id }) => id), ['breathing']);
+  const deadline = Date.parse(validReceipt.body.expiresAt);
+  assert.equal(deadline, lastValidTime + 1);
+  afterRollback = () => { time = deadline; };
   const expiredReceipt = await submit(first);
+  assert.equal(time, deadline);
   assert.equal(expiredReceipt.status, 409);
   assert.deepEqual(Object.keys(expiredReceipt.body), ['error']);
   time = lastValidTime;
@@ -410,6 +416,7 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   assert.equal(expiredConflict.status, 409);
   assert.deepEqual(Object.keys(expiredConflict.body), ['error']);
   afterRollback = undefined;
+  assert.deepEqual(await submit(first), expiredReceipt);
   time = lastValidTime;
   const approve = body => call(visit + '/review', { ...vet, method: 'POST', body });
   const approval = { version: record.version, status: 'approved', confirmed: true, riskAcknowledged: true,
