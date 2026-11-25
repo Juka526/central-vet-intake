@@ -69,3 +69,38 @@ test('Klat rejects unauthorized requests and relays synthetic messages using a m
     upstream.mock.restore();
   }
 });
+
+test('Pages forwards only the invited visit routes and required headers to Cloud Run', async () => {
+  const config = { INTAKE_API_ORIGIN: 'https://fixture.run.app' };
+  const id = crypto.randomUUID();
+  const path = '/api/intakes/' + id + '/review';
+  const upstream = mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url, config.INTAKE_API_ORIGIN + path);
+    assert.equal(options.redirect, 'manual');
+    assert.equal(options.method, 'POST');
+    assert.deepEqual(Object.fromEntries(options.headers), {
+      'content-type': 'application/json', 'x-demo-role': 'vet',
+      'x-serverless-authorization': 'Bearer synthetic-id-token',
+    });
+    assert.deepEqual(await new Response(options.body).json(), { version: 1 });
+    return Response.json({ version: 2 }, { headers: { 'Set-Cookie': 'upstream=discard' } });
+  });
+  const call = (target, headers = {}) => worker.fetch(new Request(origin + target, {
+    method: 'POST', headers, body: JSON.stringify({ version: 1 }),
+  }), config);
+  try {
+    assert.equal((await call(path)).status, 401);
+    assert.equal((await call(path, { Origin: 'https://other.invalid' })).status, 403);
+    assert.equal((await call('/api/intakes/unexpected', { Authorization: 'Bearer synthetic-id-token' })).status, 404);
+    assert.equal(upstream.mock.callCount(), 0);
+    const result = await call(path, {
+      Authorization: 'Bearer synthetic-id-token', 'Content-Type': 'application/json', 'X-Demo-Role': 'vet',
+      Cookie: 'local=discard', 'X-Serverless-Authorization': 'Bearer discarded', 'X-Forwarded-User': 'discard',
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.headers.has('Set-Cookie'), false);
+    assert.deepEqual(await result.json(), { version: 2 });
+  } finally {
+    upstream.mock.restore();
+  }
+});

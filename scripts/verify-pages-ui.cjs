@@ -2,6 +2,121 @@
 const { chromium } = require('playwright-core');
 const assert = require('node:assert/strict');
 
+async function verifyCloud(browser, worker) {
+  const { Readable } = require('node:stream');
+  const { intakeSummary } = await import('../lib/intake-record.mjs');
+  const { createVisitsHandler } = await import('../cloud/visits.mjs');
+  const records = new Map();
+  const visits = createVisitsHandler({
+    principal: req => req.headers.authorization === 'Bearer browser-fixture' ? 'synthetic-browser' : null,
+    store: {
+      async transact(owner, id, decide) {
+        const { value, result } = decide(records.get(id));
+        if (value) records.set(id, value);
+        return result;
+      },
+      async list() {
+        return [...records.values()].filter(v => v.record)
+          .map(v => ({ expiresAt: v.expiresAt, summary: intakeSummary(v.record) }));
+      },
+    },
+  });
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  let firstSubmission;
+  let loseSubmission = true, loseReview = true;
+  let staleReview = true;
+  await page.route('https://cloud.invalid/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (!path.startsWith('/api/')) {
+      const response = await worker.fetch(new Request(request.url()), {});
+      await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()) });
+      return;
+    }
+    const headers = request.headers();
+    const method = request.method();
+    const invoke = (body, options = {}) => visits(Object.assign(
+      Readable.from(body ? [Buffer.from(body)] : []), { method, headers, ...options }), path);
+    let response;
+    try {
+      const body = request.postData();
+      if (method === 'POST' && path === '/api/intakes') {
+        firstSubmission ??= { key: headers['idempotency-key'], body };
+        assert.deepEqual({ key: headers['idempotency-key'], body }, firstSubmission);
+      }
+      if (path.endsWith('/review') && staleReview) {
+        staleReview = false;
+        const initial = JSON.parse(body);
+        await invoke(JSON.stringify({ ...initial, status: 'held', note: '다른 창의 가상 보류' }));
+      }
+      response = await invoke(body);
+      if ((method === 'POST' && path === '/api/intakes' && loseSubmission) ||
+          (path.endsWith('/review') && loseReview)) {
+        if (path === '/api/intakes') loseSubmission = false;
+        else loseReview = false;
+        response = { status: 503, body: { error: '합성 저장 응답 유실' } };
+      }
+    } catch (error) {
+      response = { status: error.status || 500, body: { error: error.message } };
+    }
+    await route.fulfill({ status: response.status ?? 200, json: response.body });
+  });
+
+  const action = name => page.locator('[data-action="' + name + '"]').last().click();
+  const choose = selector => page.locator('label').filter({ has: page.locator(selector) }).click();
+  await page.goto('https://cloud.invalid/?cloud=1');
+  await page.locator('#cloud-token').fill('browser-fixture');
+  await page.locator('#cloud-auth button').click();
+  await choose('input[name="synthetic"]');
+  await choose('input[name="privacy"]');
+  await action('next');
+  await action('sample-complaint');
+  await action('next');
+  await action('sample-answers');
+  await action('next');
+  for (const risk of await page.locator('.risk-list input[value="no"]').evaluateAll(inputs => inputs.map(input => input.name)))
+    await choose('input[name="' + risk + '"][value="no"]');
+  await choose('#final-confirm');
+  await action('next');
+  await page.getByText('합성 저장 응답 유실').waitFor();
+  assert.equal(await page.locator('#final-confirm').isChecked(), true);
+  await action('next');
+  await page.locator('.receipt').waitFor();
+  await action('staff');
+  await page.locator('#login-form button[type="submit"]').click();
+  await page.locator('tbody [data-open]').click();
+  const hpi = page.locator('#review-hpi');
+  const edited = await hpi.inputValue() + '\n시연 입력 유지';
+  await hpi.fill(edited);
+  await choose('#source-confirmed');
+  if (await page.locator('#risk-confirmed').count()) await choose('#risk-confirmed');
+  await action('approve');
+  await page.getByText(/문서 버전이 변경되었습니다/).waitFor();
+  assert.equal(await hpi.inputValue(), edited);
+  await page.getByRole('button', { name: '최신 기록 다시 열기' }).click();
+  await page.getByText('현재 저장본 확인 · 내 수정은 입력란에 유지').waitFor();
+  assert.equal(await hpi.inputValue(), edited);
+  assert.equal(await page.locator('#source-confirmed').isChecked(), false);
+  await choose('#source-confirmed');
+  if (await page.locator('#risk-confirmed').count()) await choose('#risk-confirmed');
+  await action('approve');
+  await page.getByText('합성 저장 응답 유실').waitFor();
+  assert.equal(await hpi.inputValue(), edited);
+  await action('approve');
+  await page.locator('.export-bar .button-row button[data-export="hpi"]:enabled').waitFor();
+  assert.equal([...records.values()][0].history.length, 2);
+  await page.locator('[data-export="hpi"]').click();
+  await page.getByText(/승인본을 복사했습니다|승인본을 직접 선택해 복사해 주세요/).waitFor();
+  page.once('dialog', dialog => dialog.accept());
+  await action('delete-record');
+  await page.getByText('아직 접수된 문진이 없어요.').waitFor();
+  assert.deepEqual(errors, []);
+  await page.close();
+}
+
 async function run() {
   const { default: worker } = await import('../dist/_worker.js');
   const { leoCases, scoreQuestions } = await import('../test/leo-cases.mjs');
@@ -136,6 +251,7 @@ async function run() {
       if (scenario.visitType === 'return') assert.match(await page.locator('#review-hpi').inputValue(), /레오 \/ 강아지 \/ 재진/);
     }
     assert.deepEqual(errors, []);
+    await verifyCloud(browser, worker);
   } finally {
     await browser?.close();
   }

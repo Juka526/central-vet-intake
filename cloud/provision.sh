@@ -30,6 +30,7 @@ deploy=intake-deploy@$project.iam.gserviceaccount.com
 g firestore databases describe --database='(default)' >/dev/null 2>&1 || g firestore databases create --database='(default)' --location="$region" --type=firestore-native
 [[ "$(g firestore databases describe --database='(default)' --format='value(locationId)')" == "$region" ]]
 g firestore fields ttls update expiresAt --collection-group=intakeHealthChecks --enable-ttl --async
+g firestore fields ttls update expiresAt --collection-group=demoIntakeVisits --enable-ttl --async
 bucket=gs://"$project"-intake
 if ! g storage buckets describe "$bucket" >/dev/null 2>&1; then
   g storage buckets create "$bucket" --location="$region" --public-access-prevention --uniform-bucket-level-access --soft-delete-duration=0
