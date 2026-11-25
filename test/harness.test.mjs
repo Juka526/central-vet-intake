@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {dependencies, dependencySatisfied, hasReleaseEvidence, parseArgs, runIssueQueue, runStages} from '../scripts/harness.mjs';
+import {dependencies, dependencySatisfied, hasReleaseEvidence, parseArgs, verifyVisitAcceptance, runIssueQueue, runStages} from '../scripts/harness.mjs';
 
 function scenario(reviews, remote = ['pass']) {
   const state = {stage:'develop', repairs:0, improved:false, history:[]};
@@ -127,4 +127,31 @@ test('운영 릴리스 증적은 태그의 정확한 커밋과 저장 검증을 
   assert.equal(hasReleaseEvidence(notes,'abc123'),true);
   assert.equal(hasReleaseEvidence(notes,'another-commit'),false);
   assert.equal(hasReleaseEvidence('Verified commit abc123, no storage check','abc123'),false);
+});
+
+test('visit acceptance requires host Firestore and a successful same-SHA Cloud Run candidate check', () => {
+  const sha = 'a'.repeat(40);
+  const calls = [];
+  const env = { FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080', CLOUD_VISITS_CANDIDATE_SHA: sha,
+    CLOUD_VISITS_CANDIDATE_REVISION: 'intake-api-00042-abc' };
+  const run = (args, overrides) => calls.push({ args, overrides });
+  assert.throws(() => verifyVisitAcceptance(sha, {}, run), /FIRESTORE_EMULATOR_HOST/);
+  assert.equal(calls.length, 0);
+  assert.throws(() => verifyVisitAcceptance(sha, { ...env, CLOUD_VISITS_CANDIDATE_SHA: 'b'.repeat(40) }, run),
+    /candidate commit/);
+  assert.deepEqual(calls.map(call => call.args), [['--test', 'cloud/visits.test.mjs']]);
+  assert.throws(() => verifyVisitAcceptance(sha, env, () => { throw new Error('Firestore check failed'); }),
+    /Firestore check failed/);
+  assert.throws(() => verifyVisitAcceptance(sha, env, args => {
+    if (args.includes('scripts/verify-cloud-visits.mjs')) throw new Error('IAM check failed');
+  }), /IAM check failed/);
+  calls.length = 0;
+  assert.deepEqual(verifyVisitAcceptance(sha, env, run), [
+    'Firestore emulator visit transactions: PASS',
+    'Cloud Run candidate intake-api-00042-abc IAM and visit lifecycle: PASS',
+  ]);
+  assert.deepEqual(calls, [
+    { args: ['--test', 'cloud/visits.test.mjs'], overrides: { REQUIRE_FIRESTORE_EMULATOR: '1' } },
+    { args: ['scripts/verify-cloud-visits.mjs'], overrides: {} },
+  ]);
 });
