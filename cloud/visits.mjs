@@ -137,17 +137,17 @@ export function createVisitsHandler({ store, audio, cleanupSubject, audioVetSubj
         if (error) fail(400, error);
         const fingerprint = hash(JSON.stringify([b.version, b.status, b.hpi, b.soapS, b.note,
           b.confirmed === true, b.riskAcknowledged === true]));
-        if (existing.history.at(-1)?.fingerprint === fingerprint) return { result: { body: recordFor(existing, now(), canPlayAudio) } };
+        if (existing.history.at(-1)?.fingerprint === fingerprint) return { result: { visit: existing } };
         if (b.version !== record.version) fail(409, conflict);
         const updated = applyReview(record, b, '시험 수의사 ' + owner.slice(0, 6), new Date(now()).toISOString());
         const value = { ...existing, record: updated, history: [...existing.history,
           { version: updated.version, status: updated.status, review: updated.review, fingerprint }] };
         if (Buffer.byteLength(JSON.stringify(value)) > 900_000) fail(409, '이 문진의 검토 이력 저장 한도에 도달했습니다.');
-        return { value, result: { body: recordFor(value, now(), canPlayAudio) } };
+        return { value, result: { visit: value } };
       }
       if (action === 'export' && method === 'POST') {
         if (b.version !== record.version) fail(409, conflict);
-        try { return { result: { body: { text: emrAdapter.formatApproved(record, b.kind) } } }; }
+        try { return { result: { visit: existing, body: { text: emrAdapter.formatApproved(record, b.kind) } } }; }
         catch (error) { fail(409, error.message); }
       }
       fail(405, '지원하지 않는 요청입니다.');
@@ -155,7 +155,7 @@ export function createVisitsHandler({ store, audio, cleanupSubject, audioVetSubj
     if (result.visit) {
       const checkedAt = now();
       if (Date.parse(result.visit.expiresAt) <= checkedAt) fail(404, missing);
-      return { body: recordFor(result.visit, checkedAt, canPlayAudio) };
+      return { body: result.body ?? recordFor(result.visit, checkedAt, canPlayAudio) };
     }
     if (result.removeKey) await audio.remove(result.removeKey);
     if (result.original) {

@@ -271,9 +271,11 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
     await afterRead?.();
     return bytes ? new Response(bytes) : new Response(null, { status: 404 });
   };
+  let afterCommit;
   const store = firestoreVisits({ project, token: async () => null, async request(url, options) {
     const response = await fake.request(url, options);
     if (url.endsWith(':rollback')) afterRollback?.();
+    if (url.endsWith(':commit')) afterCommit?.();
     return response;
   } });
   const audio = privateAudio({ bucket: 'synthetic-private', token: async () => 'synthetic-runtime', request: storageRequest });
@@ -390,7 +392,27 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   assert.equal((await remove(thirdVisit, vet, { version: 1 })).status, 200);
   assert.equal(objects.size, 0);
 
-  time = start + 86_399_999;
+  const lastValidTime = start + 86_399_999;
+  time = lastValidTime;
+  const approve = body => call(visit + '/review', { ...vet, method: 'POST', body });
+  const approval = { version: record.version, status: 'approved', confirmed: true, riskAcknowledged: true,
+    hpi: record.draft.hpi, soapS: record.draft.soapS, note: '' };
+  const approved = await approve(approval);
+  assert.equal(approved.status, 200);
+  const copy = version => call(visit + '/export', { ...vet, method: 'POST', body: { version, kind: 'hpi' } });
+  assert.equal((await copy(approved.body.version)).status, 200);
+
+  afterRollback = () => { time++; };
+  assert.equal((await approve(approval)).status, 404);
+  time = lastValidTime;
+  assert.equal((await copy(approved.body.version)).status, 404);
+  afterRollback = undefined;
+
+  time = lastValidTime;
+  afterCommit = () => { time++; };
+  assert.equal((await approve({ ...approval, version: approved.body.version, note: '합성 검토 수정' })).status, 404);
+  afterCommit = undefined;
+  time = lastValidTime;
   assert.equal((await call(visit, vet)).status, 200);
   afterRollback = () => { time++; };
   assert.equal((await call(visit, vet)).status, 404);
