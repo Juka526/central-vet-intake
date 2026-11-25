@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { fixture } from '../test/fixture.mjs';
 
+class CandidateSessionError extends Error {}
+
 export async function verifyCloudAudio({ origin, project, bucket, vetToken, invitedToken, storageToken, request = fetch }) {
   const bytes = Buffer.from('OggS synthetic retention probe');
   const payload = fixture({
@@ -35,6 +37,16 @@ export async function verifyCloudAudio({ origin, project, bucket, vetToken, invi
   const vet = actor(vetToken);
   const invited = actor(invitedToken);
   const storageAuth = { Authorization: 'Bearer ' + storageToken };
+
+  for (const [account, call] of [['playback', vet], ['invited', invited]]) {
+    const response = await call('/api/session', { role: 'guardian' });
+    await response.body?.cancel();
+    if (response.status !== 200) {
+      const type = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+      const format = type === 'application/json' ? 'JSON' : 'non-JSON';
+      throw new CandidateSessionError('Candidate ' + account + ' session returned ' + response.status + ' (' + format + ')');
+    }
+  }
 
   async function submit(call, body, expected) {
     const id = randomUUID();
@@ -108,8 +120,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     await verifyCloudAudio({ origin: target.origin, project: CLOUD_AUDIO_PROJECT, bucket: CLOUD_AUDIO_BUCKET,
       vetToken: CLOUD_AUDIO_VET_TOKEN, invitedToken: CLOUD_VISITS_INVITED_TOKEN, storageToken: CLOUD_AUDIO_STORAGE_TOKEN });
     console.log('Candidate consent, private playback and user deletion checks passed');
-  } catch {
-    console.error('Candidate audio verification failed');
+  } catch (error) {
+    console.error(error instanceof CandidateSessionError ? error.message : 'Candidate audio verification failed');
     process.exitCode = 1;
   }
 }

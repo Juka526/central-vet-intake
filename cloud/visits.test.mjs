@@ -235,6 +235,26 @@ test('candidate smoke check exercises visit routes and requires IAM denial', asy
   }), /IAM boundary/);
 });
 
+test('candidate audio verification stops before storage writes when session authentication fails', async () => {
+  for (const [account, format] of [['playback', 'non-JSON'], ['invited', 'JSON']]) {
+    const requests = [];
+    await assert.rejects(verifyCloudAudio({
+      origin: 'https://candidate.example', project, bucket: 'synthetic-private',
+      vetToken: 'synthetic-playback', invitedToken: 'synthetic-invited', storageToken: 'synthetic-storage',
+      request: async (url, options) => {
+        requests.push([options.method, new URL(url).pathname]);
+        const rejected = options.headers['X-Serverless-Authorization'] === 'Bearer synthetic-' + account;
+        if (!rejected) return Response.json({ role: 'guardian' });
+        return format === 'JSON'
+          ? Response.json({ error: 'synthetic private response' }, { status: 401 })
+          : new Response('synthetic private response', { status: 401 });
+      },
+    }), { message: 'Candidate ' + account + ' session returned 401 (' + format + ')' });
+    assert.deepEqual(requests, Array.from({ length: account === 'playback' ? 1 : 2 },
+      () => ['GET', '/api/session']));
+  }
+});
+
 test('Cloud audio consent, private playback, exact expiry and idempotent partial deletion', async () => {
   const fake = fakeFirestore();
   const objects = new Map();
