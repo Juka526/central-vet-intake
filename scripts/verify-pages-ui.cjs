@@ -2,7 +2,7 @@
 const { chromium } = require('playwright-core');
 const assert = require('node:assert/strict');
 
-async function verifyCloud(browser, worker) {
+async function verifyCloud(browser, worker, editAfterLoss = false) {
   const { Readable } = require('node:stream');
   const { intakeSummary } = await import('../lib/intake-record.mjs');
   const { createVisitsHandler } = await import('../cloud/visits.mjs');
@@ -24,7 +24,7 @@ async function verifyCloud(browser, worker) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  let firstSubmission;
+  const submissions = [];
   let loseSubmission = true, loseReview = true;
   let staleReview = true;
   await page.route('https://cloud.invalid/**', async route => {
@@ -44,8 +44,8 @@ async function verifyCloud(browser, worker) {
     try {
       const body = request.postData();
       if (method === 'POST' && path === '/api/intakes') {
-        firstSubmission ??= { key: headers['idempotency-key'], body };
-        assert.deepEqual({ key: headers['idempotency-key'], body }, firstSubmission);
+        submissions.push({ key: headers['idempotency-key'], body });
+        if (!editAfterLoss) assert.deepEqual(submissions.at(-1), submissions[0]);
       }
       if (path.endsWith('/review') && staleReview) {
         staleReview = false;
@@ -83,11 +83,40 @@ async function verifyCloud(browser, worker) {
   await action('next');
   await page.getByText('합성 저장 응답 유실').waitFor();
   assert.equal(await page.locator('#final-confirm').isChecked(), true);
-  await action('next');
-  await page.locator('.receipt').waitFor();
+  let editedComplaint;
+  if (editAfterLoss) {
+    await action('back');
+    await action('back');
+    const complaint = page.locator('#complaint');
+    editedComplaint = await complaint.inputValue() + ' 오늘은 물도 조금 마셨어요.';
+    await complaint.fill(editedComplaint);
+    await action('next');
+    await action('next');
+    await choose('#final-confirm');
+    await action('next');
+    await page.getByRole('status').filter({ hasText: /첫 제출이 이미 접수되었습니다/ }).waitFor({ timeout: 3000 });
+    assert.equal(await page.locator('#final-confirm').isChecked(), true);
+    assert.equal(submissions.length, 2);
+    assert.equal(submissions[1].key, submissions[0].key);
+    assert.equal(JSON.parse(submissions[1].body).complaint, editedComplaint);
+  } else {
+    await action('next');
+    await page.locator('.receipt').waitFor();
+  }
   await action('staff');
   await page.locator('#login-form button[type="submit"]').click();
+  await page.locator('tbody [data-open]').first().waitFor();
+  assert.equal(await page.locator('tbody [data-open]').count(), 1);
+  if (editAfterLoss) {
+    await action('guardian');
+    await action('back');
+    await action('back');
+    assert.equal(await page.locator('#complaint').inputValue(), editedComplaint);
+    await action('staff');
+    await page.locator('#login-form button[type="submit"]').click();
+  }
   await page.locator('tbody [data-open]').click();
+  assert.equal(await page.locator('.source-text').first().textContent(), JSON.parse(submissions[0].body).complaint);
   const hpi = page.locator('#review-hpi');
   const edited = await hpi.inputValue() + '\n시연 입력 유지';
   await hpi.fill(edited);
@@ -252,6 +281,7 @@ async function run() {
     }
     assert.deepEqual(errors, []);
     await verifyCloud(browser, worker);
+    await verifyCloud(browser, worker, true);
   } finally {
     await browser?.close();
   }

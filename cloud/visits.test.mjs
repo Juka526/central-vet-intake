@@ -114,7 +114,10 @@ async function exercise(t, store, fake) {
   const submissions = await Promise.all([submit(id), submit(id)]);
   assert.deepEqual(submissions.map(result => result.status), [201, 201]);
   assert.deepEqual(submissions[0].body, submissions[1].body);
-  assert.equal((await submit(id, fixture({ complaint: '가상 환자가 오늘 토했어요.' }))).status, 409);
+  const editedInput = fixture({ complaint: '가상 환자가 오늘 토했어요.' });
+  const changed = await submit(id, editedInput);
+  assert.equal(changed.status, 409);
+  assert.equal(changed.body.existingSubmissionId, id);
   assert.equal((await call(visit, { subject, role: 'reception' })).status, 403);
   assert.equal((await call(visit, { subject: other, role: 'vet' })).status, 404);
   assert.equal((await call(visit, { subject: other, method: 'DELETE' })).status, 404);
@@ -167,7 +170,9 @@ async function exercise(t, store, fake) {
   assert.equal((await call(visit, asVet)).status, 404);
   assert.deepEqual((await call('/api/intakes', asVet)).body.items, []);
   assert.deepEqual(Object.keys(await storedPayload()).sort(), ['deletedVersion', 'expiresAt']);
-  assert.equal((await submit(guardianDeleteId)).status, 201);
+  // A rejected first attempt leaves the key available for the corrected draft.
+  assert.equal((await submit(guardianDeleteId, fixture({ finalConfirm: false }))).status, 400);
+  assert.equal((await submit(guardianDeleteId, editedInput)).status, 201);
   const ownVisit = '/api/intakes/' + guardianDeleteId;
   assert.equal((await call(ownVisit, { subject, role: 'reception', method: 'DELETE' })).status, 403);
   assert.equal((await call(ownVisit, { subject, method: 'DELETE' })).status, 200);
@@ -175,7 +180,13 @@ async function exercise(t, store, fake) {
 
   fake?.failNextCommit('lost-response');
   assert.equal((await submit(expiryId)).status, fake ? 503 : 201);
+  const retryAfterCommit = await submit(expiryId, editedInput);
+  assert.equal(retryAfterCommit.status, 409);
+  assert.equal(retryAfterCommit.body.existingSubmissionId, expiryId);
   assert.equal((await submit(expiryId)).status, 201);
+  const expiryVisit = '/api/intakes/' + expiryId;
+  assert.equal((await call(expiryVisit, asVet)).body.complaint, fixture().complaint.trim());
+  assert.equal((await call('/api/intakes', asVet)).body.items.length, 1);
   time += 86_400_000;
   assert.equal((await call('/api/intakes/' + expiryId, asVet)).status, 404);
   assert.deepEqual((await call('/api/intakes', asVet)).body.items, []);

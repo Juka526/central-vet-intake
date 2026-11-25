@@ -69,8 +69,14 @@ export function createVisitsHandler({ store, principal = cloudRunPrincipal, now 
       const fingerprint = hash(JSON.stringify([record.petId, record.visitType, record.category, record.complaint,
         Object.entries(record.answers).sort(), record.risks, consents.version, consents.voice]));
       return store.transact(owner, id, existing => {
-        if (existing && (!existing.record || Date.parse(existing.expiresAt) <= now() ||
-            existing.fingerprint !== fingerprint)) fail(409, '이미 사용한 접수 식별자입니다.');
+        if (existing && (!existing.record || Date.parse(existing.expiresAt) <= now()))
+          fail(409, '이미 사용한 접수 식별자입니다.');
+        if (existing && existing.fingerprint !== fingerprint) return {
+          result: { status: 409, body: {
+            error: '첫 제출이 이미 접수되었습니다. 수정한 내용은 이 화면에 유지됩니다.',
+            existingSubmissionId: id,
+          } },
+        };
         return { value: existing ? undefined : { expiresAt, record, fingerprint, history: [] },
           result: { status: 201, body: receipt(existing?.record ?? record) } };
       });
