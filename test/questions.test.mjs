@@ -721,3 +721,67 @@ test('저장된 문진의 기존 저녁 답변을 검토 화면에서 계속 읽
   assert.ok(intakeQuestions(saved).some(slot => slot.label === '저녁 몇 번 토했나요?' && slot.answer === '1회'));
   assert.throws(() => pages('/api/intakes',{method:'POST',body:saved}), /답변 형식|후속 질문/);
 });
+
+test('공통 날짜가 붙은 구토와 설사의 필수 횟수를 날짜별로 묻는다', () => {
+  const input = confirm(intake('어제 구토와 설사가 있었어요. 오늘 구토와 설사가 있었어요. 사료를 절반만 먹었어요.'));
+  const counts = remaining(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(slot => slot.label), [
+    '어제 몇 번 토했나요?', '어제 설사가 몇 번 있었나요?',
+    '오늘 몇 번 토했나요?', '오늘 설사가 몇 번 있었나요?',
+  ]);
+  for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+  for (const {id} of counts) {
+    const answers = {...input.answers};
+    delete answers[id];
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  }
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.deepEqual(readPagesDraft(id).timeline.filter(item => item.label.includes('몇 번')),
+    counts.map(({label}) => ({label,text:'미확인 (모르겠어요)'})));
+  assert.equal(counts.length,4);
+  assert.ok(counts.every(slot => slot.candidate === null));
+});
+
+test('저장된 문진에서 공통 날짜가 붙은 기존 횟수 답변을 읽을 수 있다', () => {
+  const saved = intake('어제 구토와 설사가 있었어요. 오늘 구토와 설사가 있었어요.',{
+    draft:{timeline:[]}, answers:{'vomit-count':'2회','diarrhea-count':'3회'},
+  });
+  assert.deepEqual(intakeQuestions(saved).filter(slot => slot.id.includes('-count')).map(slot => slot.answer),
+    ['2회','3회']);
+});
+
+test('다른 날짜의 횟수 정정은 한 번 되묻고 원래 날짜에 저장하지 않는다', () => {
+  const input = confirm(intake('어제 두 번 토했어요. 오늘 한 번 토했어요. 사료를 절반만 먹었어요.'));
+  const [yesterday,today] = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  input.answers['vomit-onset'] = '모르겠어요';
+  input.corrections = [yesterday.id];
+  const conflict = '오늘 네 번 토했어요.';
+  assert.deepEqual(resolveQuestionAnswer(conflict,false,false,yesterday), {answer:'',clarify:true});
+  assert.match(clarification(yesterday), /^어제/u);
+  assert.deepEqual(resolveQuestionAnswer(conflict,true,false,yesterday), {answer:'모르겠어요',clarify:false});
+  input.answers[yesterday.id] = conflict;
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /횟수 후속 질문/);
+  const corrected = resolveQuestionAnswer('어제 네 번 토했어요.',true,false,yesterday);
+  assert.equal(corrected.clarify,false);
+  input.answers[yesterday.id] = corrected.answer;
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const result = readPagesDraft(id);
+  assert.ok(result.timeline.some(item => item.label === yesterday.label && item.text === corrected.answer+' (보호자 정정)'));
+  assert.ok(result.timeline.some(item => item.label === today.label && item.text === '1회'));
+});
+
+test('선택 음수 정정 도중 건너뛰면 Pages에서 미확인으로 접수한다', () => {
+  const input = confirm(intake(short + ' 물은 평소와 같아요.'));
+  const water = intakeQuestions(input).find(slot => slot.id === 'water');
+  assert.deepEqual(resolveQuestionAnswer('평소랑 조금 달라요',false,false,water), {answer:'',clarify:true});
+  delete input.answers.water;
+  input.corrections = ['water'];
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const result = readPagesDraft(id);
+  assert.ok(result.missing.includes(water.label));
+  assert.ok(result.hpi.includes(water.label + ' 미확인\n'));
+  const risks = {...input.risks};
+  delete risks[RISKS[0].id];
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,risks}}), /위험 징후/);
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,corrections:['invalid']}}), /정정한 답변/);
+});
