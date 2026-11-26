@@ -478,3 +478,49 @@ test('식사량의 방향이나 양을 알 수 없는 답은 한 번 되묻고 �
   assert.ok(draft(input).missing.includes(meal.label));
   assert.match(draft(input).hpi, /먹었나요\? 미확인 \(모르겠어요\)/);
 });
+
+test('방금 추가 구토는 오늘 누적 횟수와 별도로 확인하고 Pages에서 필수로 검사한다', () => {
+  const input = confirm(intake('어제 두 번 토했어요. 오늘 세 번 토했어요. 방금 한 번 더 토했어요. 사료를 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts.map(({label,answer}) => [label,answer]), [
+    ['어제 몇 번 토했나요?', '2회'], ['오늘 몇 번 토했나요?', '3회'], ['방금 몇 번 토했나요?', '1회'],
+  ]);
+  assert.ok(intakeQuestions(input).some(slot => slot.label === '구토 관찰 시점 · 방금' && slot.answer === '방금'));
+  input.answers['vomit-onset'] = '모르겠어요';
+  const recent = counts.at(-1);
+  delete input.answers[recent.id];
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[recent.id] = '2회';
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  assert.match(draft(input).hpi, /방금 몇 번 토했나요\? 2회 \(보호자 정정\)/u);
+  assert.match(draft(input).hpi, /오늘 몇 번 토했나요\? 3회/u);
+});
+
+test('한 문장에 날짜와 횟수가 있는 구토와 설사를 각각 후보로 확인한다', () => {
+  const input = confirm(intake('어제 구토 2회와 오늘 설사 3회. 사료를 절반만 먹었어요.'));
+  assert.deepEqual(intakeQuestions(input).filter(slot => slot.id.includes('-count')).map(({label,answer}) => [label,answer]), [
+    ['어제 몇 번 토했나요?', '2회'], ['오늘 설사가 몇 번 있었나요?', '3회'],
+  ]);
+  assert.deepEqual(remaining(input).map(slot => slot.id), ['vomit-onset','diarrhea-onset']);
+});
+
+test('모두가 설사 횟수를 수식하면 시작 시점을 구토와 공유하지 않는다', () => {
+  const input = confirm(intake('구토와 설사가 있었어요. 어제부터 설사를 모두 세 번 했어요. 사료를 절반만 먹었어요.'));
+  assert.deepEqual(remaining(input).map(slot => slot.id), ['vomit-onset','vomit-count']);
+  assert.equal(input.answers['diarrhea-onset'], '어제');
+  assert.equal(input.answers['diarrhea-count'], '3회');
+});
+
+test('방향이나 양이 없는 음수 답은 한 번 되묻고 여전히 모호하면 미확인으로 남긴다', () => {
+  const input = confirm(intake(short));
+  const water = intakeQuestions(input).find(slot => slot.id === 'water');
+  for (const value of ['평소랑 달라요', '물은 평소와 조금 달랐어요']) {
+    assert.deepEqual(resolveQuestionAnswer(value,false,false,water), {answer:'',clarify:true});
+    input.answers.water = resolveQuestionAnswer(value,true,false,water).answer;
+    assert.match(draft(input).hpi, /물은 평소와 비교해 얼마나 마셨나요\? 미확인/u);
+    assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  }
+  for (const value of ['평소보다 덜 마셨어요','평소와 같아요','없어요']) {
+    assert.deepEqual(resolveQuestionAnswer(value,true,false,water), {answer:value,clarify:false});
+  }
+});
