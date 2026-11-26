@@ -7,8 +7,22 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
   const { intakeSummary } = await import('../lib/intake-record.mjs');
   const { createVisitsHandler } = await import('../cloud/visits.mjs');
   const records = new Map();
+  const recordings = new Map();
+  let failRemoval = !editAfterLoss;
   const visits = createVisitsHandler({
     principal: req => req.headers.authorization === 'Bearer browser-fixture' ? 'synthetic-browser' : null,
+    audioVetSubjects: new Set(['synthetic-browser']),
+    audio: {
+      async put(key, type, bytes) { recordings.set(key, bytes); },
+      async get(key) { return recordings.get(key); },
+      async remove(key) {
+        if (failRemoval) {
+          failRemoval = false;
+          throw new Error('Synthetic object deletion failure');
+        }
+        recordings.delete(key);
+      },
+    },
     store: {
       async transact(owner, id, decide) {
         const { value, result } = decide(records.get(id));
@@ -22,6 +36,26 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
     },
   });
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  if (!editAfterLoss) {
+    await page.context().grantPermissions(['microphone'], { origin: 'https://cloud.invalid' });
+    await page.addInitScript(() => {
+      window.MediaRecorder = class extends MediaRecorder {
+        start() {
+          document.documentElement.removeAttribute('data-recorded-chunk');
+          this.addEventListener('dataavailable', event => {
+            if (event.data.size) document.documentElement.setAttribute('data-recorded-chunk', '');
+          });
+          super.start(100);
+        }
+      };
+      window.SpeechRecognition = class extends EventTarget {
+        processLocally = false;
+        static async available() { return 'available'; }
+        start() {}
+        stop() {}
+      };
+    });
+  }
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   const submissions = [];
@@ -67,7 +101,11 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
     } catch (error) {
       response = { status: error.status || 500, body: { error: error.message } };
     }
-    await route.fulfill({ status: response.status ?? 200, json: response.body });
+    if (response.bytes) {
+      await route.fulfill({ status: 200, contentType: response.type, body: response.bytes });
+    } else {
+      await route.fulfill({ status: response.status ?? 200, json: response.body });
+    }
   });
 
   const action = name => page.locator('[data-action="' + name + '"]').last().click();
@@ -77,9 +115,26 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
   await page.locator('#cloud-auth button').click();
   await choose('input[name="synthetic"]');
   await choose('input[name="privacy"]');
+  if (!editAfterLoss) {
+    await choose('input[name="voice"]');
+    await choose('input[name="retainAudio"]');
+  }
   await action('next');
   await action('sample-complaint');
   const draftComplaint = await page.locator('#complaint').inputValue();
+  if (!editAfterLoss) {
+    async function record() {
+      await action('voice');
+      await page.getByRole('button', { name: '음성 입력 마치기' }).waitFor();
+      await page.locator('html[data-recorded-chunk]').waitFor({ state: 'attached' });
+      await action('voice');
+      await page.getByRole('button', { name: '녹음만 버리기' }).waitFor();
+    }
+    await record();
+    await action('discard-audio');
+    assert.equal(await page.locator('#complaint:focus').inputValue(), draftComplaint);
+    await record();
+  }
   await action('staff');
   await page.locator('#login-form button[type="submit"]').click();
   await page.locator('.staff-main').waitFor();
@@ -133,7 +188,22 @@ async function verifyCloud(browser, worker, editAfterLoss = false) {
   const hpi = page.locator('#review-hpi');
   const edited = await hpi.inputValue() + '\n시연 입력 유지';
   await hpi.fill(edited);
+  if (!editAfterLoss) {
+    await action('play-audio');
+    const player = page.getByLabel('시험 음성 원본');
+    await player.waitFor({ state: 'attached' });
+    assert.equal(await player.evaluate(audio => audio.controls), true);
+  }
   await action('guardian');
+  if (!editAfterLoss) {
+    page.once('dialog', dialog => dialog.accept());
+    await action('delete-own-audio');
+    await page.getByText(/자료 접근을 차단했습니다/).waitFor();
+    assert.equal(recordings.size, 1);
+    await page.getByRole('button', { name: '음성 삭제 다시 시도' }).click();
+    await page.getByText('음성 원본을 삭제했습니다.').waitFor();
+    assert.equal(recordings.size, 0);
+  }
   if (!editAfterLoss) await page.locator('.receipt').waitFor();
   await action('staff');
   await page.locator('#login-form button[type="submit"]').click();
@@ -179,7 +249,8 @@ async function run() {
   const { leoCases, scoreQuestions } = await import('../test/leo-cases.mjs');
   let browser;
   try {
-    browser = await chromium.launch({ executablePath: process.env.CHROME_BIN || '/usr/bin/google-chrome' });
+    browser = await chromium.launch({ executablePath: process.env.CHROME_BIN || '/usr/bin/google-chrome',
+      args: ['--use-fake-device-for-media-stream'] });
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));

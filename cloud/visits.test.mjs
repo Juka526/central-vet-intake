@@ -433,7 +433,10 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   assert.equal((await submit(second)).status, 201);
   assert.equal(objects.size, 1);
   failDelete = true;
-  assert.equal((await remove(secondVisit + '/audio')).status, 503);
+  const partialAudio = await remove(secondVisit + '/audio');
+  assert.equal(partialAudio.status, 503);
+  assert.equal(partialAudio.body.deletionPending, true);
+  assert.equal(objects.size, 1);
   assert.equal((await call(secondVisit + '/audio', vet)).status, 404);
   assert.equal((await call(secondVisit, vet)).status, 200);
   assert.equal((await remove(secondVisit + '/audio')).status, 200);
@@ -445,7 +448,10 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   assert.equal((await submit(third)).status, 201);
   assert.equal((await remove(thirdVisit, vet, { version: 0 })).status, 409);
   failDelete = true;
-  assert.equal((await remove(thirdVisit, vet, { version: 1 })).status, 503);
+  const partialVisit = await remove(thirdVisit, vet, { version: 1 });
+  assert.equal(partialVisit.status, 503);
+  assert.equal(partialVisit.body.deletionPending, true);
+  assert.equal(objects.size, 1);
   assert.equal((await call(thirdVisit, vet)).status, 404);
   assert.equal((await call(thirdVisit + '/audio', vet)).status, 404);
   assert.equal((await remove(thirdVisit, vet, { version: 1 })).status, 200);

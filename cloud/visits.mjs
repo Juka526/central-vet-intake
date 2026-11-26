@@ -197,7 +197,13 @@ export function createVisitsHandler({ store, audio, cleanupSubject, cleanupAudie
       if (Date.parse(result.visit.expiresAt) <= checkedAt) fail(404, missing);
       return { body: result.body ?? recordFor(result.visit, checkedAt, canPlayAudio) };
     }
-    if (result.removeKey) await audio.remove(result.removeKey);
+    if (result.removeKey) {
+      try { await audio.remove(result.removeKey); }
+      catch {
+        return { status: 503, body: { deletionPending: true,
+          error: '자료 접근을 차단했습니다. 음성 원본 삭제를 완료하려면 같은 삭제 버튼을 다시 눌러 주세요.' } };
+      }
+    }
     if (result.original) {
       const { key, type } = result.original;
       const bytes = await audio.get(key);
