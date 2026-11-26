@@ -104,3 +104,48 @@ test('Pages forwards only the invited visit routes and required headers to Cloud
     upstream.mock.restore();
   }
 });
+
+test('Pages forwards authenticated audio bytes and rejects unexpected media', async () => {
+  const config = { INTAKE_API_ORIGIN: 'https://fixture.run.app' };
+  const path = '/api/intakes/' + crypto.randomUUID() + '/audio';
+  const bytes = new Uint8Array([79, 103, 103, 83, 0, 255]);
+  let type = 'audio/ogg';
+  const upstream = mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url, config.INTAKE_API_ORIGIN + path);
+    assert.equal(options.headers.get('X-Serverless-Authorization'), 'Bearer synthetic-id-token');
+    assert.equal(options.headers.get('X-Demo-Role'), 'vet');
+    return new Response(bytes, { headers: { 'Content-Type': type } });
+  });
+  const call = () => worker.fetch(new Request(origin + path, {
+    headers: { Authorization: 'Bearer synthetic-id-token', 'X-Demo-Role': 'vet' },
+  }), config);
+  try {
+    const response = await call();
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Content-Type'), type);
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes);
+    type = 'text/html';
+    assert.equal((await call()).status, 502);
+  } finally {
+    upstream.mock.restore();
+  }
+});
+
+test('Pages forwards the cleanup job token through Cloud Run IAM', async () => {
+  const path = '/api/intake/audio-cleanup';
+  const config = { INTAKE_API_ORIGIN: 'https://fixture.run.app' };
+  const upstream = mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url, config.INTAKE_API_ORIGIN + path);
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers.get('X-Serverless-Authorization'), 'Bearer synthetic-job-token');
+    return Response.json({ ok: true });
+  });
+  try {
+    const headers = { Authorization: 'Bearer synthetic-job-token' };
+    assert.equal((await worker.fetch(new Request(origin + path, { headers }), config)).status, 405);
+    assert.equal((await worker.fetch(new Request(origin + path, { headers, method: 'POST' }), config)).status, 200);
+  } finally {
+    upstream.mock.restore();
+  }
+});

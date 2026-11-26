@@ -5,3 +5,4 @@
 !cloud/visits-store.mjs
 !lib/
 !lib/*.mjs
+!cloud/audio-store.mjs

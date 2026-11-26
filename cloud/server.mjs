@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { privateAudio } from './audio-store.mjs';
 import { firestoreVisits } from './visits-store.mjs';
 import { createVisitsHandler } from './visits.mjs';
 
@@ -68,9 +69,14 @@ export function makeServer(probe, visits) {
         catch { body = { ok: false, error: 'Storage check failed' }; status = 503; }
       }
     }
-    if (visits && (path === '/api/session' || path === '/api/intakes' || path?.startsWith('/api/intakes/'))) {
+    if (visits && (path === '/api/intake/audio-cleanup' || path === '/api/session' || path === '/api/intakes' || path?.startsWith('/api/intakes/'))) {
       try {
         const response = await visits(req, path);
+        if (response.bytes) {
+          res.writeHead(200, { 'Content-Type': response.type, 'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff' });
+          return res.end(response.bytes);
+        }
         status = response.status ?? 200;
         body = response.body;
       } catch (error) {
@@ -86,7 +92,14 @@ export function makeServer(probe, visits) {
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   // Cloud Run IAM enforces roles/run.invoker before a request reaches this container.
   const project = process.env.GCP_PROJECT_ID;
-  const visits = createVisitsHandler({ store: firestoreVisits({ project, token: metadataToken }) });
-  makeServer(async () => checkStorage({ project, bucket: process.env.INTAKE_BUCKET,
+  const bucket = process.env.INTAKE_BUCKET;
+  const visits = createVisitsHandler({
+    store: firestoreVisits({ project, token: metadataToken }),
+    audio: privateAudio({ bucket, token: metadataToken }),
+    cleanupSubject: process.env.AUDIO_CLEANUP_SUBJECT,
+    cleanupAudience: process.env.AUDIO_CLEANUP_AUDIENCE,
+    audioVetSubjects: new Set((process.env.AUDIO_VET_SUBJECTS ?? '').split(',').map(subject => subject.trim()).filter(Boolean)),
+  });
+  makeServer(async () => checkStorage({ project, bucket,
     token: await metadataToken() }), visits).listen(Number(process.env.PORT || 8080), '0.0.0.0');
 }

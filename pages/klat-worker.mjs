@@ -94,12 +94,15 @@ async function intake(request, env, path) {
       body: probe || request.method === 'GET' ? undefined : request.body,
     });
     if (result.status >= 300 && result.status < 400) return json({ error: 'Unexpected upstream redirect' }, 502);
-    if (!probe && !result.headers.get('Content-Type')?.includes('application/json')) {
+    const type = result.headers.get('Content-Type');
+    const audio = request.method === 'GET' && path.endsWith('/audio') &&
+      result.status === 200 && ['audio/webm', 'audio/ogg', 'audio/mp4'].includes(type);
+    if (!probe && !audio && !type?.includes('application/json')) {
       if ([401, 403].includes(result.status)) return json({ error: '초대 권한과 ID 토큰을 확인해 주세요.' }, result.status);
       return json({ error: '클라우드 문진에 연결하지 못했습니다.' }, 502);
     }
     return new Response(result.body, { status: result.status, headers: {
-      'Content-Type': result.headers.get('Content-Type') || 'application/json',
+      'Content-Type': type || 'application/json',
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
     } });
   } catch { return json({ error: 'Cloud Run unavailable' }, 502); }
@@ -108,9 +111,10 @@ async function intake(request, env, path) {
 export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
-    if (path.startsWith('/api/intake/') && path !== '/api/intake/storage-check') return json({ error: 'Unknown intake route' }, 404);
-    if (path === '/api/intake/storage-check' || path === '/api/session' || path === '/api/intakes' ||
-        /^\/api\/intakes\/[0-9a-f-]{36}(?:\/(review|export))?$/.test(path)) return intake(request, env, path);
+    if (path === '/api/intake/audio-cleanup' && request.method !== 'POST')
+      return json({ error: 'POST required' }, 405);
+    if (path === '/api/intake/audio-cleanup' || path === '/api/intake/storage-check' || path === '/api/session' || path === '/api/intakes' ||
+        /^\/api\/intakes\/[0-9a-f-]{36}(?:\/(review|export|audio))?$/.test(path)) return intake(request, env, path);
     if (path === '/api/klat/status' && request.method === 'GET') {
       // A fixed, synthetic lookup checks authentication without returning customer data.
       try {
