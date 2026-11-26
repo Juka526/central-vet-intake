@@ -524,3 +524,34 @@ test('방향이나 양이 없는 음수 답은 한 번 되묻고 여전히 모�
     assert.deepEqual(resolveQuestionAnswer(value,true,false,water), {answer:value,clarify:false});
   }
 });
+
+
+test('같은 문장의 오전·저녁 관찰은 같은 날짜의 별도 필수 횟수로 남긴다', () => {
+  const input = confirm(intake('어제부터 토했어요. 어제 두 번 토했어요. 오늘 오전 8시와 저녁 7시에 또 토했어요. 사료를 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts.map(({label,answer}) => [label,answer]), [
+    ['어제 몇 번 토했나요?', '2회'], ['오늘 오전 8시 몇 번 토했나요?', ''], ['오늘 저녁 7시 몇 번 토했나요?', ''],
+  ]);
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[counts[1].id] = '1회';
+  input.answers[counts[2].id] = '모르겠어요';
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  assert.match(draft(input).hpi, /오늘 저녁 7시 몇 번 토했나요\? 미확인/u);
+
+  const each = confirm(intake('어제부터 토했어요. 오늘 오전 8시와 저녁 7시에 한 번씩 토했어요. 사료를 절반만 먹었어요.'));
+  assert.deepEqual(intakeQuestions(each).filter(slot => slot.id.startsWith('vomit-count')).map(slot => slot.answer), ['1회','1회']);
+});
+
+test('먹었다는 사실이나 안심 표현만으로 양이 확인되지는 않는다', () => {
+  const input = confirm(intake(short));
+  for (const [id,vague,clear] of [['meal','밥 먹었어요','평소보다 적게 먹었어요'], ['water','괜찮아요','물은 150mL 마셨어요']]) {
+    const slot = intakeQuestions(input).find(item => item.id === id);
+    assert.deepEqual(resolveQuestionAnswer(vague,false,false,slot), {answer:'',clarify:true});
+    assert.deepEqual(resolveQuestionAnswer(clear,true,false,slot), {answer:clear,clarify:false});
+    input.answers[id] = vague;
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+    input.answers[id] = resolveQuestionAnswer(vague,true,false,slot).answer;
+    assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+    assert.ok(draft(input).missing.includes(slot.label));
+  }
+});
