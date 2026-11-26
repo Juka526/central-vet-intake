@@ -262,6 +262,45 @@ test('언젠가는 시작 시점으로 확정하지 않고 한 번 더 확인한
   assert.ok(draft(input).missing.includes(slot.label));
 });
 
+test('괜찮아요는 구토 시작 시점으로 확정하지 않고 재확인한다', () => {
+  const input = confirm(intake('어제 두 번 토했어요. 사료를 절반만 먹었어요.'));
+  const [slot] = remaining(input);
+  assert.equal(slot.id, 'vomit-onset');
+  assert.deepEqual(resolveQuestionAnswer('괜찮아요',false,false,slot), {answer:'',clarify:true});
+  input.answers[slot.id] = '괜찮아요';
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /시작 시점/);
+  input.answers[slot.id] = resolveQuestionAnswer('괜찮아요',true,false,slot).answer;
+  assert.equal(input.answers[slot.id], '모르겠어요');
+  const { id } = pages('/api/intakes',{method:'POST',body:input});
+  pages('/api/login',{method:'POST',body:{role:'vet'}});
+  try {
+    assert.ok(pages('/api/intakes/'+id).draft.missing.includes(slot.label));
+  } finally {
+    pages('/api/logout');
+  }
+});
+
+test('재발과 악화가 같은 절에 있어도 오늘 횟수는 필수다', () => {
+  const input = confirm(intake('그제부터 토했어요. 어제 두 번 토했어요. 오늘도 토했는데 점점 심해졌어요. 사료를 절반만 먹었어요.', {visitType:'return'}));
+  const slots = intakeQuestions(input);
+  assert.equal(slots.find(slot => slot.label === '어제 몇 번 토했나요?')?.answer, '2회');
+  assert.equal(slots.find(slot => slot.label === '구토 관찰 시점 · 오늘')?.answer, '오늘');
+  assert.equal(slots.find(slot => slot.label.startsWith('오늘 구토 경과'))?.answer, '점점 심해졌어요');
+  const today = slots.find(slot => slot.label === '오늘 몇 번 토했나요?');
+  assert.equal(today?.required, true);
+  assert.equal(today.answer, '');
+  for (const slot of remaining(input)) if (slot.id !== today.id) input.answers[slot.id] = '모르겠어요';
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[today.id] = '1회';
+  const { id } = pages('/api/intakes',{method:'POST',body:input});
+  pages('/api/login',{method:'POST',body:{role:'vet'}});
+  try {
+    assert.match(pages('/api/intakes/'+id).draft.hpi, /오늘 몇 번 토했나요\? 1회/);
+  } finally {
+    pages('/api/logout');
+  }
+});
+
 test('악화 시점과 처음 구토한 시점을 따로 확인한다', () => {
   const slots = intakeQuestions(intake('어제 두 번 구토했어요. 오늘부터 구토가 심해졌어요.'));
   assert.equal(slots.find(slot => slot.id === 'vomit-onset').candidate, null);
