@@ -82,6 +82,25 @@ function api(store, now, options) {
   };
 }
 
+test('Cloud Scheduler uses the IAM-verified Authorization header only for cleanup', async () => {
+  const path = '/api/intake/audio-cleanup';
+  let runs = 0;
+  const call = api(undefined, Date.now, { cleanupSubject: 'synthetic-cleaner',
+    audio: { async sweep() { runs++; } } });
+  const headers = { authorization: forwardedToken('synthetic-cleaner') };
+  assert.equal((await call(path, { method: 'POST', headers })).status, 200);
+  assert.equal((await call(path, { method: 'POST', subject: 'synthetic-cleaner' })).status, 200);
+  assert.equal((await call(path, { method: 'POST', subject: 'synthetic-other', headers })).status, 403);
+  assert.equal((await call(path, { method: 'POST', headers: {
+    ...headers, 'x-serverless-authorization': 'Bearer invalid',
+  } })).status, 401);
+  assert.equal((await call(path, { method: 'POST', headers: {
+    authorization: 'Bearer e30.e30.original-signature',
+  } })).status, 401);
+  assert.equal((await call('/api/session', { headers })).status, 401);
+  assert.equal(runs, 2);
+});
+
 async function exercise(t, store, fake) {
   const subject = 'synthetic-' + randomUUID();
   const other = 'synthetic-' + randomUUID();

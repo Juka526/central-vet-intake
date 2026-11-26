@@ -77,7 +77,7 @@ Issue #6 하네스는 호스트에서 두 검사를 필수로 실행한다. 실�
 
 보호자가 음성 처리와 원본 보관에 모두 동의한 경우에만 원본을 비공개 접수 버킷의 `intake-audio/`에 저장한다. 음성 재생에는 수의사 시연 역할과 Cloud Run이 인증한 계정의 재생 권한이 모두 필요하다. 운영자는 후보 리비전에 `AUDIO_VET_SUBJECTS`를 설정하고 재생을 허용할 초대 계정의 Google `sub` 값을 쉼표로 구분해 입력한다. 설정이 비어 있으면 모든 재생 요청이 거부된다. 재생 권한을 받은 계정도 자기 계정에 저장된 음성만 재생할 수 있다. API는 음성 1시간과 문진 24시간 경계부터 조회를 차단한다. 보호자는 자기 접수의 음성이나 문진을 삭제할 수 있고, 수의사 시연 역할의 문진 삭제는 문서 버전을 확인한다. 버킷 삭제 중 오류가 나면 접근 차단 상태를 유지하며, 화면에서 같은 삭제를 다시 요청할 수 있다.
 
-만료 객체를 주기적으로 지우려면 운영자가 전용 서비스 계정에 해당 Cloud Run 서비스의 호출 권한을 부여하고 `AUDIO_CLEANUP_SUBJECT`를 해당 계정의 숫자 고유 ID로 설정한다. Cloud Scheduler가 이 계정의 OIDC 토큰으로 Pages 주소의 `POST /api/intake/audio-cleanup`을 호출하도록 분 단위 주기 및 오류 재시도를 구성한다. 토큰의 audience는 Cloud Run 서비스의 canonical URL을 사용한다. Pages가 토큰을 Cloud Run IAM용 헤더로 전달하며, API가 전용 계정의 ID를 확인한다. 기존 Firestore TTL은 문진을 비동기로 제거하고, 버킷에 갱신된 일 단위 수명 주기 규칙을 적용하면 예약 작업이 실패한 경우에도 음성 객체를 정리한다.
+만료 객체를 주기적으로 지우려면 운영자가 전용 서비스 계정에 해당 Cloud Run 서비스의 호출 권한을 부여하고 `AUDIO_CLEANUP_SUBJECT`를 해당 계정의 숫자 고유 ID로 설정한다. Cloud Scheduler가 이 계정의 OIDC 토큰으로 비공개 Cloud Run 서비스의 `POST /api/intake/audio-cleanup`을 직접 호출하도록 분 단위 주기 및 오류 재시도를 구성한다. 토큰의 audience는 경로 없이 Cloud Run 서비스의 canonical URL을 사용한다. Cloud Run IAM이 호출 권한과 토큰을 검사한 뒤 API가 전용 계정의 ID를 확인한다. 기존 Firestore TTL은 문진을 비동기로 제거하고, 버킷에 갱신된 일 단위 수명 주기 규칙을 적용하면 예약 작업이 실패한 경우에도 음성 객체를 정리한다.
 
 #### 후보 리비전에서 음성 인수 검증
 

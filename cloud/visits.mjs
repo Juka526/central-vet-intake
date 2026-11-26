@@ -11,10 +11,12 @@ const conflict = '문서 버전이 변경되었습니다. 최신 기록을 확�
 const missing = '접수 자료가 없거나 접근할 수 없습니다.';
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 
-// Cloud Run IAM validates this header and strips the signature before forwarding it.
-// Never derive a principal from the ordinary Authorization header or client role.
-export function cloudRunPrincipal(req) {
-  const token = req.headers['x-serverless-authorization']?.match(/^[Bb][Ee][Aa][Rr][Ee][Rr] [\w-]+\.([\w-]+)\.SIGNATURE_REMOVED_BY_GOOGLE$/)?.[1];
+// Cloud Run strips the signature from the header it authenticates. When the
+// proxy header is present, Cloud Run uses it instead of Authorization.
+export function cloudRunPrincipal(req, directCleanup = false) {
+  const forwarded = req.headers['x-serverless-authorization'] ??
+    (directCleanup ? req.headers.authorization : undefined);
+  const token = forwarded?.match(/^[Bb][Ee][Aa][Rr][Ee][Rr] [\w-]+\.([\w-]+)\.SIGNATURE_REMOVED_BY_GOOGLE$/)?.[1];
   if (!token) return null;
   try {
     const { sub, iss, exp } = JSON.parse(Buffer.from(token, 'base64url'));
@@ -42,9 +44,10 @@ async function jsonBody(req, limit = 256_000) {
 export function createVisitsHandler({ store, audio, cleanupSubject, audioVetSubjects = new Set(),
   principal = cloudRunPrincipal, now = Date.now }) {
   return async function visits(req, path) {
-    const subject = await principal(req);
+    const cleanup = path === '/api/intake/audio-cleanup';
+    const subject = await principal(req, cleanup);
     if (!subject) fail(401, '초대된 계정의 Cloud Run ID 토큰을 입력해 주세요.');
-    if (path === '/api/intake/audio-cleanup') {
+    if (cleanup) {
       if (subject !== cleanupSubject) fail(403, missing);
       if (req.method !== 'POST') fail(405, '지원하지 않는 요청입니다.');
       await audio.sweep(now());
