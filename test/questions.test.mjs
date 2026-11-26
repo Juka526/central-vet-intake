@@ -431,14 +431,16 @@ test('같은 날짜의 오전과 저녁 관찰은 각각 필수 횟수를 가지
   const input = confirm(intake('어제 처음 토했어요. 11월 24일 오전에 두 번 토했어요. 11월 24일 저녁에 한 번 토했어요. 밥은 절반만 먹었어요.'));
   const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
   assert.deepEqual(counts.map(slot => [slot.label,slot.answer]), [
+    ['어제 몇 번 토했나요?', ''],
     ['11월 24일 오전 몇 번 토했나요?', '2회'], ['11월 24일 저녁 몇 번 토했나요?', '1회'],
   ]);
+  input.answers[counts[0].id] = '모르겠어요';
   for (const slot of counts) {
     const answers = {...input.answers};
     delete answers[slot.id];
     assert.match(validateIntake({...input, answers}), /후속 질문/);
   }
-  input.answers[counts[0].id] = '3회';
+  input.answers[counts[1].id] = '3회';
   assert.deepEqual(remaining(input), []);
   assert.equal(validateIntake(input), null);
   assert.match(draft(input).hpi, /11월 24일 오전 몇 번 토했나요\? 3회 \(보호자 정정\)/);
@@ -696,10 +698,13 @@ test('다른 증상의 횟수는 재확인하고 Pages 접수에서도 구토 �
 
 test('이어지는 저녁 관찰의 날짜를 보존하고 어제 시작 시점은 유지한다', () => {
   const input = confirm(intake('어제 저녁 처음 토했어요. 오늘 아침에 두 번 토했고 저녁에는 한 번 더 토했어요. 사료를 절반만 먹었어요.'));
-  assert.deepEqual(remaining(input), []);
+  const [firstCount] = remaining(input);
+  assert.deepEqual(remaining(input).map(slot => slot.label), ['어제 저녁 몇 번 토했나요?']);
+  input.answers[firstCount.id] = '모르겠어요';
   const {id} = pages('/api/intakes',{method:'POST',body:input});
   const result = readPagesDraft(id);
   assert.deepEqual(result.timeline.filter(item => item.label.includes('몇 번')), [
+    {label:'어제 저녁 몇 번 토했나요?',text:'미확인 (모르겠어요)'},
     {label:'오늘 아침 몇 번 토했나요?',text:'2회'},
     {label:'오늘 저녁 몇 번 토했나요?',text:'1회'},
   ]);
@@ -945,4 +950,48 @@ test('서로 다른 시작 시점은 한 번 명확히 되묻고 끝내 모르�
   input.answers[onset.id] = resolveQuestionAnswer('어제나 오늘',true,false,onset).answer;
   assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
   assert.ok(draft(input).missing.includes(onset.label));
+});
+
+for (const {complaint, missing, confirmed, onset} of [
+  {
+    complaint:'어제 처음 토했고 오늘 다시 한 번 토했어요. 밥은 절반만 먹었어요.',
+    missing:'어제', confirmed:{label:'오늘 몇 번 토했나요?',text:'1회'}, onset:'어제',
+  },
+  {
+    complaint:'어제 두 번 토했어요. 오늘 또 했어요. 밥은 절반만 먹었어요.',
+    missing:'오늘', confirmed:{label:'어제 몇 번 토했나요?',text:'2회'}, onset:null,
+  },
+]) {
+  test(complaint + ' Pages에서 날짜별 구토 횟수를 확인한다', () => {
+    const input = confirm(intake(complaint));
+    assert.equal(input.answers['vomit-onset'] ?? null, onset);
+    input.answers['vomit-onset'] ??= '어제';
+    const [slot] = remaining(input);
+    assert.deepEqual(remaining(input).map(item => item.label), [missing + ' 몇 번 토했나요?']);
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+    input.answers[slot.id] = '모르겠어요';
+    const {id} = pages('/api/intakes',{method:'POST',body:input});
+    const result = readPagesDraft(id);
+    assert.ok(result.timeline.some(item => item.label === slot.label && item.text === '미확인 (모르겠어요)'));
+    assert.ok(result.timeline.some(item => item.label === confirmed.label && item.text === confirmed.text));
+    assert.ok(result.missing.includes(slot.label));
+  });
+}
+
+test('모호한 활력 답변은 한 번 더 묻고 Pages 초안에서 미확인으로 표시한다', () => {
+  const input = confirm(intake(short));
+  const slot = intakeQuestions(input).find(item => item.id === 'activity');
+  for (const value of ['그럭저럭이요', '활력은 그냥 그래요']) {
+    assert.deepEqual(resolveQuestionAnswer(value,false,false,slot), {answer:'',clarify:true});
+    input.answers[slot.id] = value;
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  }
+  assert.match(clarification(slot), /평소/u);
+  assert.deepEqual(resolveQuestionAnswer('평소보다 덜 움직여요',true,false,slot),
+    {answer:'평소보다 덜 움직여요',clarify:false});
+  input.answers[slot.id] = resolveQuestionAnswer('그럭저럭이요',true,false,slot).answer;
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const result = readPagesDraft(id);
+  assert.ok(result.hpi.includes(slot.label + ' 미확인 (모르겠어요)'));
+  assert.ok(result.missing.includes(slot.label));
 });
