@@ -814,3 +814,46 @@ test('다른 증상의 시작을 말하면 현재 시작 항목을 한 번 더 �
   assert.equal(input.answers['diarrhea-onset'], '오늘');
   assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
 });
+
+test('인접한 날짜의 반복 관찰은 증상 이름이 생략되어도 횟수를 확인한다', () => {
+  const input = confirm(intake('어제 두 번 토했어요. 오늘도 했어요. 사료는 절반만 먹었어요.'));
+  input.answers['vomit-onset'] = '어제';
+  const slots = intakeQuestions(input);
+  assert.equal(slots.find(slot => slot.label === '어제 몇 번 토했나요?')?.answer, '2회');
+  assert.equal(slots.find(slot => slot.label === '구토 관찰 시점 · 오늘')?.answer, '오늘');
+  assert.deepEqual(remaining(input).map(slot => slot.label), ['오늘 몇 번 토했나요?']);
+  const [today] = remaining(input);
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[today.id] = '1회';
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.deepEqual(readPagesDraft(id).timeline.filter(item => item.label.includes('몇 번')), [
+    {label:'어제 몇 번 토했나요?',text:'2회'},
+    {label:'오늘 몇 번 토했나요?',text:'1회'},
+  ]);
+  for (const complaint of [
+    '어제 구토와 설사가 있었어요. 오늘도 했어요.',
+    '어제 두 번 토했어요. 사료를 절반만 먹었어요. 오늘도 했어요.',
+    '어제 두 번 토했어요. 오늘도 밥을 먹었어요.',
+  ]) {
+    assert.ok(!intakeQuestions(intake(complaint)).some(slot => slot.label === '오늘 몇 번 토했나요?'), complaint);
+  }
+});
+
+test('식사 횟수를 구토 횟수에 답하면 한 번 더 묻고 계속 불명확하면 미확인으로 남긴다', () => {
+  const input = confirm(intake('어제부터 토했어요. 사료를 절반만 먹었어요.'));
+  const [slot] = remaining(input);
+  const wrong = '밥을 두 번 먹었어요';
+  assert.equal(slot.id, 'vomit-count');
+  assert.deepEqual(resolveQuestionAnswer(wrong,false,false,slot), {answer:'',clarify:true});
+  input.answers[slot.id] = wrong;
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /횟수 후속 질문/);
+  const repeated = resolveQuestionAnswer(wrong,true,false,slot);
+  assert.deepEqual(repeated, {answer:'모르겠어요',clarify:false});
+  const retry = resolveQuestionAnswer('두 번 했어요',true,false,slot);
+  assert.deepEqual(retry, {answer:'두 번 했어요',clarify:false});
+  input.answers[slot.id] = repeated.answer;
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const result = readPagesDraft(id);
+  assert.ok(result.timeline.some(item => item.label === slot.label && item.text === '미확인 (모르겠어요)'));
+  assert.equal(input.answers.meal, '사료를 절반만 먹었어요');
+});
