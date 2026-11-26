@@ -596,3 +596,57 @@ test('불명확한 재진 병력은 한 번 되묻고 명시적인 없음과 미
   assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
   assert.match(draft(input).hpi, /진단받은 질환이 있나요\? 미확인 \(모르겠어요\)/u);
 });
+
+test('생략된 증상의 불확실한 날짜별 횟수도 직접 확인해야 한다', () => {
+  for (const report of ['오늘은 두세 번이요.', '오늘은 횟수가 기억 안 나요.']) {
+    const input = confirm(intake('어제부터 두 번 토했어요. '+report+' 사료를 절반만 먹었어요.'));
+    const [today] = remaining(input);
+    assert.deepEqual(remaining(input).map(slot => slot.label), ['오늘 몇 번 토했나요?']);
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+    input.answers[today.id] = '모르겠어요';
+    assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+    assert.match(draft(input).hpi, /오늘 몇 번 토했나요\? 미확인/u);
+  }
+});
+
+test('연결한 구토 횟수와 설사 횟수를 따로 확인하고 날짜 하나만 정정한다', () => {
+  const input = confirm(intake('어제 구토 2회와 오늘 1회, 설사는 3회 했어요. 사료를 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(({label,answer}) => [label,answer]), [
+    ['어제 몇 번 토했나요?', '2회'], ['오늘 몇 번 토했나요?', '1회'], ['이번에 설사가 몇 번 있었나요?', '3회'],
+  ]);
+  assert.deepEqual(remaining(input).map(slot => slot.id), ['vomit-onset','diarrhea-onset']);
+  for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+  input.answers[counts[1].id] = '4회';
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  const hpi = draft(input).hpi;
+  assert.match(hpi, /^어제 몇 번 토했나요\? 2회$/mu);
+  assert.match(hpi, /^오늘 몇 번 토했나요\? 4회 \(보호자 정정\)$/mu);
+  assert.match(draft(input).hpi, /이번에 설사가 몇 번 있었나요\? 3회\n/u);
+});
+
+test('더 관찰한 설사 횟수는 해당 날짜의 후보가 된다', () => {
+  const input = confirm(intake('어제부터 설사를 했어요. 오늘 세 번 더 설사했어요. 사료를 절반만 먹었어요.'));
+  assert.deepEqual(remaining(input), []);
+  assert.deepEqual(intakeQuestions(input).filter(slot => slot.id.includes('-count')).map(({label,answer}) => [label,answer]), [
+    ['오늘 설사가 몇 번 있었나요?', '3회'],
+  ]);
+});
+
+test('다른 항목의 답과 질문의 의미를 되묻는 응답은 한 번만 명확히 되묻는다', () => {
+  const input = confirm(intake('어제부터 두 번 토했어요.'));
+  for (const [id,value] of [['meal','물은 평소보다 많이 마셨어요'], ['meal','물을 평소보다 많이 먹었어요'], ['stool','무슨 말이에요']]) {
+    const slot = intakeQuestions(input).find(item => item.id === id);
+    assert.deepEqual(resolveQuestionAnswer(value,false,false,slot), {answer:'',clarify:true});
+    assert.match(clarification(slot), id === 'meal' ? /먹었나요/u : /묽거나 딱딱/u);
+    assert.deepEqual(resolveQuestionAnswer(value,true,false,slot), {answer:'모르겠어요',clarify:false});
+    input.answers[id] = value;
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+    input.answers[id] = resolveQuestionAnswer(value,true,false,slot).answer;
+  }
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  for (const id of ['meal','water','stool']) {
+    const slot = intakeQuestions(input).find(item => item.id === id);
+    assert.ok(draft(input).missing.includes(slot.label));
+  }
+});
