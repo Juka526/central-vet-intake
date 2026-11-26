@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createPublicKey, randomUUID, verify } from 'node:crypto';
 import { CONSENT_VERSION, validateIntake } from '../lib/engine.mjs';
 import { applyReview, newRecord, receipt, reviewError } from '../lib/intake-record.mjs';
 import { emrAdapter } from '../lib/emr-adapter.mjs';
@@ -11,19 +11,49 @@ const conflict = '문서 버전이 변경되었습니다. 최신 기록을 확�
 const missing = '접수 자료가 없거나 접근할 수 없습니다.';
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 
-// Cloud Run strips the signature from the header it authenticates. When the
-// proxy header is present, Cloud Run uses it instead of Authorization.
-export function cloudRunPrincipal(req, directCleanup = false) {
-  const forwarded = req.headers['x-serverless-authorization'] ??
-    (directCleanup ? req.headers.authorization : undefined);
-  const token = forwarded?.match(/^[Bb][Ee][Aa][Rr][Ee][Rr] [\w-]+\.([\w-]+)\.SIGNATURE_REMOVED_BY_GOOGLE$/)?.[1];
-  if (!token) return null;
+function googleSubject(claims) {
+  const { sub, iss, exp } = claims;
+  return ['https://accounts.google.com', 'accounts.google.com'].includes(iss) &&
+    typeof sub === 'string' && sub && Number.isFinite(exp) && exp * 1000 > Date.now() ? sub : null;
+}
+
+// The Pages proxy supplies the signature-stripped header verified by Cloud Run IAM.
+export function cloudRunPrincipal(req) {
+  const payload = req.headers['x-serverless-authorization']?.match(/^[Bb][Ee][Aa][Rr][Ee][Rr] [\w-]+\.([\w-]+)\.SIGNATURE_REMOVED_BY_GOOGLE$/)?.[1];
+  if (!payload) return null;
+  try { return googleSubject(JSON.parse(Buffer.from(payload, 'base64url'))); } catch { return null; }
+}
+
+let googleKeysCache;
+async function googleKeys() {
+  if (googleKeysCache?.until > Date.now()) return googleKeysCache.keys;
+  const response = await fetch('https://www.googleapis.com/oauth2/v3/certs', {
+    redirect: 'error', signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error('Google OIDC keys unavailable');
+  const { keys } = await response.json();
+  if (!Array.isArray(keys)) throw new Error('Invalid Google OIDC keys');
+  googleKeysCache = { keys, until: Date.now() + 600_000 };
+  return keys;
+}
+
+async function schedulerPrincipal(authorization, audience, loadKeys) {
+  const parts = authorization?.match(/^Bearer ([\w-]+)\.([\w-]+)\.([\w-]+)$/i);
+  if (!audience || !parts) return null;
+  const [, header, payload, signature] = parts;
+  let claims, keyId;
   try {
-    const { sub, iss, exp } = JSON.parse(Buffer.from(token, 'base64url'));
-    if (['https://accounts.google.com', 'accounts.google.com'].includes(iss) &&
-        typeof sub === 'string' && sub && Number.isFinite(exp) && exp * 1000 > Date.now()) return sub;
+    const { alg, kid } = JSON.parse(Buffer.from(header, 'base64url'));
+    if (alg !== 'RS256' || typeof kid !== 'string') return null;
+    keyId = kid;
+    claims = JSON.parse(Buffer.from(payload, 'base64url'));
+    if (claims.aud !== audience || !googleSubject(claims)) return null;
   } catch { return null; }
-  return null;
+  const jwk = (await loadKeys()).find(key => key.kid === keyId && key.kty === 'RSA');
+  if (!jwk) return null;
+  const verified = verify('RSA-SHA256', Buffer.from(header + '.' + payload),
+    createPublicKey({ key: jwk, format: 'jwk' }), Buffer.from(signature, 'base64url'));
+  return verified ? googleSubject(claims) : null;
 }
 
 async function jsonBody(req, limit = 256_000) {
@@ -41,11 +71,13 @@ async function jsonBody(req, limit = 256_000) {
   return value;
 }
 
-export function createVisitsHandler({ store, audio, cleanupSubject, audioVetSubjects = new Set(),
-  principal = cloudRunPrincipal, now = Date.now }) {
+export function createVisitsHandler({ store, audio, cleanupSubject, cleanupAudience, loadCleanupKeys = googleKeys,
+  audioVetSubjects = new Set(), principal = cloudRunPrincipal, now = Date.now }) {
   return async function visits(req, path) {
     const cleanup = path === '/api/intake/audio-cleanup';
-    const subject = await principal(req, cleanup);
+    const subject = cleanup && req.headers['x-serverless-authorization'] === undefined
+      ? await schedulerPrincipal(req.headers.authorization, cleanupAudience, loadCleanupKeys)
+      : await principal(req);
     if (!subject) fail(401, '초대된 계정의 Cloud Run ID 토큰을 입력해 주세요.');
     if (cleanup) {
       if (subject !== cleanupSubject) fail(403, missing);

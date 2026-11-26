@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { test } from 'node:test';
 import { verifyCloudAudio } from '../scripts/verify-cloud-audio.mjs';
@@ -82,20 +82,33 @@ function api(store, now, options) {
   };
 }
 
-test('Cloud Scheduler uses the IAM-verified Authorization header only for cleanup', async () => {
+test('Cloud Scheduler requires a signed Google OIDC token for direct cleanup', async () => {
   const path = '/api/intake/audio-cleanup';
+  const cleanupAudience = 'https://candidate.run.app';
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'synthetic-key' };
+  const jwt = (overrides = {}) => {
+    const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const parts = encode({ alg: 'RS256', kid: jwk.kid }) + '.' + encode({
+      sub: 'synthetic-cleaner', iss: 'https://accounts.google.com', aud: cleanupAudience,
+      exp: Math.floor(Date.now() / 1000) + 3600, ...overrides,
+    });
+    return 'Bearer ' + parts + '.' + sign('RSA-SHA256', Buffer.from(parts), privateKey).toString('base64url');
+  };
   let runs = 0;
-  const call = api(undefined, Date.now, { cleanupSubject: 'synthetic-cleaner',
-    audio: { async sweep() { runs++; } } });
-  const headers = { authorization: forwardedToken('synthetic-cleaner') };
-  assert.equal((await call(path, { method: 'POST', headers })).status, 200);
+  const call = api(undefined, Date.now, { cleanupSubject: 'synthetic-cleaner', cleanupAudience,
+    loadCleanupKeys: async () => [jwk], audio: { async sweep() { runs++; } } });
+  const direct = authorization => call(path, { method: 'POST', headers: { authorization } });
+  const headers = { authorization: jwt() };
+  assert.equal((await direct(jwt())).status, 200);
+  assert.equal((await direct(jwt({ aud: 'https://different.run.app' }))).status, 401);
+  assert.equal((await direct(jwt({ sub: 'synthetic-other' }))).status, 403);
+  assert.equal((await direct(forwardedToken('synthetic-cleaner'))).status, 401);
+  assert.equal((await direct(jwt().replace(/[^.]+$/, 'invalid'))).status, 401);
   assert.equal((await call(path, { method: 'POST', subject: 'synthetic-cleaner' })).status, 200);
   assert.equal((await call(path, { method: 'POST', subject: 'synthetic-other', headers })).status, 403);
   assert.equal((await call(path, { method: 'POST', headers: {
     ...headers, 'x-serverless-authorization': 'Bearer invalid',
-  } })).status, 401);
-  assert.equal((await call(path, { method: 'POST', headers: {
-    authorization: 'Bearer e30.e30.original-signature',
   } })).status, 401);
   assert.equal((await call('/api/session', { headers })).status, 401);
   assert.equal(runs, 2);

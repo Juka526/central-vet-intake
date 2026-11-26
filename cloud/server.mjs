@@ -97,6 +97,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     store: firestoreVisits({ project, token: metadataToken }),
     audio: privateAudio({ bucket, token: metadataToken }),
     cleanupSubject: process.env.AUDIO_CLEANUP_SUBJECT,
+    cleanupAudience: process.env.AUDIO_CLEANUP_AUDIENCE,
     audioVetSubjects: new Set((process.env.AUDIO_VET_SUBJECTS ?? '').split(',').map(subject => subject.trim()).filter(Boolean)),
   });
   makeServer(async () => checkStorage({ project, bucket,
