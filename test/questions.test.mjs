@@ -785,3 +785,32 @@ test('선택 음수 정정 도중 건너뛰면 Pages에서 미확인으로 접�
   assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,risks}}), /위험 징후/);
   assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,corrections:['invalid']}}), /정정한 답변/);
 });
+
+
+test('같은 날짜에 구토하며 설사했다고 말하면 날짜와 두 증상의 횟수를 구분한다', () => {
+  const input = confirm(intake('어제 두 번 토하며 설사도 했어요. 오늘 세 번 토하며 설사도 했어요. 사료를 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(({label,answer}) => [label,answer]), [
+    ['어제 몇 번 토했나요?', '2회'], ['어제 설사가 몇 번 있었나요?', ''],
+    ['오늘 몇 번 토했나요?', '3회'], ['오늘 설사가 몇 번 있었나요?', ''],
+  ]);
+  for (const slot of remaining(input).filter(slot => !slot.id.includes('-count'))) input.answers[slot.id] = '모르겠어요';
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[counts[1].id] = '1회';
+  input.answers[counts[3].id] = '모르겠어요';
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  assert.match(draft(input).hpi, /오늘 설사가 몇 번 있었나요\? 미확인/u);
+});
+
+test('다른 증상의 시작을 말하면 현재 시작 항목을 한 번 더 묻는다', () => {
+  const input = confirm(intake('어제부터 토했어요. 오늘부터 설사했어요. 사료를 절반만 먹었어요.'));
+  for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+  const vomit = intakeQuestions(input).find(slot => slot.id === 'vomit-onset');
+  const wrong = '설사는 오늘부터예요.';
+  assert.deepEqual(resolveQuestionAnswer(wrong,false,false,vomit), {answer:'',clarify:true});
+  input.answers[vomit.id] = wrong;
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[vomit.id] = resolveQuestionAnswer(wrong,true,false,vomit).answer;
+  assert.equal(input.answers['diarrhea-onset'], '오늘');
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+});
