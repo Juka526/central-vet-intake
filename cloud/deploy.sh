@@ -8,7 +8,7 @@ repo="$region-docker.pkg.dev"
 sha=$(git rev-parse HEAD)
 image="$repo/$project/intake/intake-api:$sha"
 gcloud auth configure-docker "$repo" --project="$project" --quiet
-docker buildx build --platform linux/amd64 --push --tag "$image" cloud
+docker buildx build --platform linux/amd64 --push --tag "$image" -f cloud/Dockerfile .
 run=(--project="$project" --region="$region")
 # Fail if the service listing is unavailable. First deployment cannot use --no-traffic.
 services=$(gcloud run services list "${run[@]}" --format='value(metadata.name)')
@@ -19,7 +19,7 @@ fi
 # IAM invocation checks are enabled by default for new services. Do not add a public binding.
 gcloud run deploy "$service" "${run[@]}" "${deploy_args[@]}" --image="$image" --quiet \
   --service-account="intake-runtime@$project.iam.gserviceaccount.com" \
-  --set-env-vars="GCP_PROJECT_ID=$project,INTAKE_BUCKET=$project-intake" \
+  --update-env-vars="GCP_PROJECT_ID=$project,INTAKE_BUCKET=$project-intake" \
   --min=0 --max=3 --memory=256Mi --cpu=1 --timeout=90s --invoker-iam-check
 description=$(gcloud run services describe "$service" "${run[@]}" --format=json)
 python3 -c '

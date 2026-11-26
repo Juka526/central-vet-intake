@@ -69,3 +69,83 @@ test('Klat rejects unauthorized requests and relays synthetic messages using a m
     upstream.mock.restore();
   }
 });
+
+test('Pages forwards only the invited visit routes and required headers to Cloud Run', async () => {
+  const config = { INTAKE_API_ORIGIN: 'https://fixture.run.app' };
+  const id = crypto.randomUUID();
+  const path = '/api/intakes/' + id + '/review';
+  const upstream = mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url, config.INTAKE_API_ORIGIN + path);
+    assert.equal(options.redirect, 'manual');
+    assert.equal(options.method, 'POST');
+    assert.deepEqual(Object.fromEntries(options.headers), {
+      'content-type': 'application/json', 'x-demo-role': 'vet',
+      'x-serverless-authorization': 'Bearer synthetic-id-token',
+    });
+    assert.deepEqual(await new Response(options.body).json(), { version: 1 });
+    return Response.json({ version: 2 }, { headers: { 'Set-Cookie': 'upstream=discard' } });
+  });
+  const call = (target, headers = {}) => worker.fetch(new Request(origin + target, {
+    method: 'POST', headers, body: JSON.stringify({ version: 1 }),
+  }), config);
+  try {
+    assert.equal((await call(path)).status, 401);
+    assert.equal((await call(path, { Origin: 'https://other.invalid' })).status, 403);
+    assert.equal((await call('/api/intakes/unexpected', { Authorization: 'Bearer synthetic-id-token' })).status, 404);
+    assert.equal(upstream.mock.callCount(), 0);
+    const result = await call(path, {
+      Authorization: 'Bearer synthetic-id-token', 'Content-Type': 'application/json', 'X-Demo-Role': 'vet',
+      Cookie: 'local=discard', 'X-Serverless-Authorization': 'Bearer discarded', 'X-Forwarded-User': 'discard',
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.headers.has('Set-Cookie'), false);
+    assert.deepEqual(await result.json(), { version: 2 });
+  } finally {
+    upstream.mock.restore();
+  }
+});
+
+test('Pages forwards authenticated audio bytes and rejects unexpected media', async () => {
+  const config = { INTAKE_API_ORIGIN: 'https://fixture.run.app' };
+  const path = '/api/intakes/' + crypto.randomUUID() + '/audio';
+  const bytes = new Uint8Array([79, 103, 103, 83, 0, 255]);
+  let type = 'audio/ogg';
+  const upstream = mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url, config.INTAKE_API_ORIGIN + path);
+    assert.equal(options.headers.get('X-Serverless-Authorization'), 'Bearer synthetic-id-token');
+    assert.equal(options.headers.get('X-Demo-Role'), 'vet');
+    return new Response(bytes, { headers: { 'Content-Type': type } });
+  });
+  const call = () => worker.fetch(new Request(origin + path, {
+    headers: { Authorization: 'Bearer synthetic-id-token', 'X-Demo-Role': 'vet' },
+  }), config);
+  try {
+    const response = await call();
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Content-Type'), type);
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes);
+    type = 'text/html';
+    assert.equal((await call()).status, 502);
+  } finally {
+    upstream.mock.restore();
+  }
+});
+
+test('Pages forwards the cleanup job token through Cloud Run IAM', async () => {
+  const path = '/api/intake/audio-cleanup';
+  const config = { INTAKE_API_ORIGIN: 'https://fixture.run.app' };
+  const upstream = mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url, config.INTAKE_API_ORIGIN + path);
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers.get('X-Serverless-Authorization'), 'Bearer synthetic-job-token');
+    return Response.json({ ok: true });
+  });
+  try {
+    const headers = { Authorization: 'Bearer synthetic-job-token' };
+    assert.equal((await worker.fetch(new Request(origin + path, { headers }), config)).status, 405);
+    assert.equal((await worker.fetch(new Request(origin + path, { headers, method: 'POST' }), config)).status, 200);
+  } finally {
+    upstream.mock.restore();
+  }
+});

@@ -1,15 +1,21 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { privateAudio } from './audio-store.mjs';
+import { firestoreVisits } from './visits-store.mjs';
+import { createVisitsHandler } from './visits.mjs';
 
+let cachedToken;
 async function metadataToken() {
+  if (cachedToken?.until > Date.now()) return cachedToken.token;
   const url = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token';
   const result = await fetch(url, {
     headers: { 'Metadata-Flavor': 'Google' }, redirect: 'error', signal: AbortSignal.timeout(5000),
   });
   if (!result.ok) throw new Error('Runtime identity unavailable');
-  const { access_token: token } = await result.json();
+  const { access_token: token, expires_in: seconds } = await result.json();
   if (!token) throw new Error('Missing runtime identity');
+  cachedToken = { token, until: Date.now() + (Number(seconds) - 60) * 1000 };
   return token;
 }
 
@@ -48,11 +54,12 @@ export async function checkStorage({ project, bucket, token, firestoreOrigin = '
   return { ok: true, firestore: true, storage: true };
 }
 
-export function makeServer(probe) {
+export function makeServer(probe, visits) {
   return createServer(async (req, res) => {
     let status = 404;
     let body = { error: 'Resource not found' };
-    if (req.url === '/api/intake/storage-check') {
+    const path = req.url?.split('?')[0];
+    if (path === '/api/intake/storage-check') {
       if (req.method !== 'POST') {
         status = 405;
         body = { error: 'POST required' };
@@ -62,6 +69,21 @@ export function makeServer(probe) {
         catch { body = { ok: false, error: 'Storage check failed' }; status = 503; }
       }
     }
+    if (visits && (path === '/api/intake/audio-cleanup' || path === '/api/session' || path === '/api/intakes' || path?.startsWith('/api/intakes/'))) {
+      try {
+        const response = await visits(req, path);
+        if (response.bytes) {
+          res.writeHead(200, { 'Content-Type': response.type, 'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff' });
+          return res.end(response.bytes);
+        }
+        status = response.status ?? 200;
+        body = response.body;
+      } catch (error) {
+        status = error.status ?? 503;
+        body = { error: error.status ? error.message : '클라우드 저장소에 연결하지 못했습니다. 입력을 유지한 상태로 다시 시도해 주세요.' };
+      }
+    }
     res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(body));
   });
@@ -69,6 +91,15 @@ export function makeServer(probe) {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   // Cloud Run IAM enforces roles/run.invoker before a request reaches this container.
-  makeServer(async () => checkStorage({ project: process.env.GCP_PROJECT_ID, bucket: process.env.INTAKE_BUCKET,
-    token: await metadataToken() })).listen(Number(process.env.PORT || 8080), '0.0.0.0');
+  const project = process.env.GCP_PROJECT_ID;
+  const bucket = process.env.INTAKE_BUCKET;
+  const visits = createVisitsHandler({
+    store: firestoreVisits({ project, token: metadataToken }),
+    audio: privateAudio({ bucket, token: metadataToken }),
+    cleanupSubject: process.env.AUDIO_CLEANUP_SUBJECT,
+    cleanupAudience: process.env.AUDIO_CLEANUP_AUDIENCE,
+    audioVetSubjects: new Set((process.env.AUDIO_VET_SUBJECTS ?? '').split(',').map(subject => subject.trim()).filter(Boolean)),
+  });
+  makeServer(async () => checkStorage({ project, bucket,
+    token: await metadataToken() }), visits).listen(Number(process.env.PORT || 8080), '0.0.0.0');
 }

@@ -1,0 +1,8 @@
+**
+!cloud/
+!cloud/server.mjs
+!cloud/visits.mjs
+!cloud/visits-store.mjs
+!lib/
+!lib/*.mjs
+!cloud/audio-store.mjs

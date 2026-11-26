@@ -4,7 +4,8 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { CONSENT_VERSION, PETS, draft, validateIntake } from './lib/engine.mjs';
+import { CONSENT_VERSION, validateIntake } from './lib/engine.mjs';
+import { applyReview, intakeSummary, newRecord, receipt, reviewError } from './lib/intake-record.mjs';
 import { emrAdapter } from './lib/emr-adapter.mjs';
 
 const ROOT=dirname(fileURLToPath(import.meta.url));
@@ -73,17 +74,14 @@ export function createApplication({vetCode=process.env.VET_CODE||uid(),reception
           if(s.role!=='guardian') return fail(res,403,'보호자 화면에서 제출해 주세요.');
           if(db.prepare('SELECT count(*) AS n FROM intakes').get().n>=250) return fail(res,429,'시험 접수 한도에 도달했습니다. 기존 자료를 삭제해 주세요.');
           const b=await body(req);const error=validateIntake(b);if(error)return fail(res,400,error);
-          // Whitelist: client-supplied summaries, approval state and review identities are ignored.
-          const input={petId:b.petId,visitType:b.visitType,category:b.category,complaint:b.complaint.trim(),answers:b.answers,...(b.questionVersion === undefined ? {} : {questionVersion:b.questionVersion,categories:b.categories,corrections:b.corrections ?? [],symptomSelections:b.symptomSelections ?? []}),risks:Object.fromEntries(Object.entries(b.risks).filter(([k])=>['breathing','collapse','bleeding','toxin','urine','abdomen','heat','birth'].includes(k)))};
-          const id=uid(),createdAt=stamp();
-          const record={id,...input,pet:PETS.find(p=>p.id===input.petId),draft:draft(input),status:'pending',version:1,createdAt,expiresAt:new Date(now()+24*HOUR).toISOString(),consents:{version:CONSENT_VERSION,privacy:true,voice:b.consents.voice,retainAudio:b.consents.retainAudio,at:createdAt},review:null};
+          const id=uid(),record=newRecord(b,id,now());
           if(b.audio) {audio.set(id,{bytes:Buffer.from(b.audio.base64,'base64'),type:b.audio.type,expires:now()+HOUR});record.audioExpiresAt=new Date(now()+HOUR).toISOString();}
           db.prepare('INSERT INTO intakes VALUES(?,?,?,?)').run(id,s.actor,now()+24*HOUR,JSON.stringify(record));audit(s,'intake.created',id);if(b.audio)audit(s,'audio.retained',id);
-          return send(res,201,{id,status:record.status,flags:record.draft.flags,expiresAt:record.expiresAt,audioExpiresAt:record.audioExpiresAt||null});
+          return send(res,201,receipt(record));
         }
         if(path==='/api/intakes' && req.method==='GET') {
           if(!['vet','reception'].includes(s.role))return fail(res,403,'의료진 전용입니다.');
-          const list=db.prepare('SELECT body FROM intakes ORDER BY expires DESC').all().map(r=>{const v=JSON.parse(r.body);return {id:v.id,pet:{id:v.pet.id,name:v.pet.name,species:v.pet.species,age:v.pet.age},category:v.category,visitType:v.visitType,status:v.status,version:v.version,createdAt:v.createdAt,riskCount:v.draft.flags.length,urgent:v.draft.flags.some(f=>f.level==='contact'),missingCount:v.draft.missing.length};});
+          const list=db.prepare('SELECT body FROM intakes ORDER BY expires DESC').all().map(r=>intakeSummary(JSON.parse(r.body)));
           audit(s,'intake.list');return send(res,200,{items:list});
         }
         if(path==='/api/audit' && req.method==='GET') {if(s.role!=='vet')return fail(res,403,'수의사 전용입니다.');audit(s,'audit.view');return send(res,200,{items:db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 200').all()});}
@@ -108,10 +106,9 @@ export function createApplication({vetCode=process.env.VET_CODE||uid(),reception
           if(action==='review' && req.method==='POST') {
             const b=await body(req);
             if(b.version!==get(r.id)?.record.version || b.version!==r.version)return fail(res,409,'다른 검토자가 변경했습니다. 목록에서 다시 열어 최신 내용을 확인해 주세요.');
-            if(!['approved','held'].includes(b.status) || typeof b.hpi!=='string'||!b.hpi.trim()||b.hpi.length>14000||typeof b.soapS!=='string'||!b.soapS.trim()||b.soapS.length>15000||typeof b.note!=='string'||b.note.length>1000)return fail(res,400,'검토 내용과 상태를 확인해 주세요.');
-            if(b.status==='approved' && (b.confirmed!==true || (r.draft.flags.length>0 && b.riskAcknowledged!==true)))return fail(res,400,'원문 대조와 위험 징후 확인 후 승인해 주세요.');
-            if(b.status==='held'&&!b.note.trim())return fail(res,400,'보류 사유를 입력해 주세요.');
-            r.status=b.status;r.version++;r.review={hpi:b.status==='approved'?b.hpi.replaceAll('[보호자 보고 · 수의사 검토 전 초안]','[보호자 보고 · 수의사 검토 완료]'):b.hpi,soapS:b.status==='approved'?b.soapS.replaceAll('[보호자 보고 · 수의사 검토 전 초안]','[보호자 보고 · 수의사 검토 완료]'):b.soapS,note:b.note,by:`시험 수의사 ${s.actor.slice(0,6)}`,at:stamp(),confirmed:b.confirmed===true,riskAcknowledged:b.riskAcknowledged===true};save(r.id,r);audit(s,`review.${b.status}`,r.id);return send(res,200,{...r,audioAvailable:audio.has(r.id)});
+            const error=reviewError(b,r);if(error)return fail(res,400,error);
+            const updated=applyReview(r,b,`시험 수의사 ${s.actor.slice(0,6)}`,stamp());
+            save(r.id,updated);audit(s,`review.${b.status}`,r.id);return send(res,200,{...updated,audioAvailable:audio.has(r.id)});
           }
           if(action==='export' && req.method==='POST') {
             const b=await body(req);if(b.version!==get(r.id)?.record.version || b.version!==r.version)return fail(res,409,'최신 승인본을 다시 확인해 주세요.');

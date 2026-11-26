@@ -387,3 +387,55 @@ test('레오 기준선 6개 사례에서 고정된 필수 하위 질문과 직�
     });
   }
 });
+
+test('같은 날짜의 오전과 저녁 관찰은 각각 필수 횟수를 가지며 부분 정정을 보존한다', () => {
+  const input = confirm(intake('어제 처음 토했어요. 11월 24일 오전에 두 번 토했어요. 11월 24일 저녁에 한 번 토했어요. 밥은 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(slot => [slot.label,slot.answer]), [
+    ['11월 24일 오전 몇 번 토했나요?', '2회'], ['11월 24일 저녁 몇 번 토했나요?', '1회'],
+  ]);
+  for (const slot of counts) {
+    const answers = {...input.answers};
+    delete answers[slot.id];
+    assert.match(validateIntake({...input, answers}), /후속 질문/);
+  }
+  input.answers[counts[0].id] = '3회';
+  assert.deepEqual(remaining(input), []);
+  assert.equal(validateIntake(input), null);
+  assert.match(draft(input).hpi, /11월 24일 오전 몇 번 토했나요\? 3회 \(보호자 정정\)/);
+  assert.match(draft(input).hpi, /11월 24일 저녁 몇 번 토했나요\? 1회\n/);
+});
+
+test('구토 뒤에 호흡 변화가 이어져도 두 날짜의 횟수와 직접 위험 확인을 요구한다', () => {
+  const input = confirm(intake('그제부터 구토했어요. 어제 두 번 토했어요. 오늘 다시 두 번 토하고 호흡도 힘들어했어요. 밥은 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(slot => [slot.label,slot.answer]), [
+    ['어제 몇 번 토했나요?', '2회'], ['오늘 몇 번 토했나요?', '2회'],
+  ]);
+  assert.deepEqual(remaining(input).map(slot => slot.id), ['breath-onset']);
+  assert.match(validateIntake(input), /후속 질문/);
+  input.answers['breath-onset'] = '모르겠어요';
+  assert.equal(validateIntake(input), null);
+  for (const slot of counts) {
+    const answers = {...input.answers};
+    delete answers[slot.id];
+    assert.throws(() => pages('/api/intakes', {method:'POST',body:{...input, answers}}), /후속 질문/);
+  }
+  const risks = {...input.risks};
+  delete risks.breathing;
+  assert.match(validateIntake({...input, risks}), /위험 징후/);
+});
+
+test('식사량의 방향이나 양을 알 수 없는 답은 한 번 되묻고 미확인으로 남긴다', () => {
+  const input = confirm(intake('어제부터 두 번 토했어요.'));
+  const [meal] = remaining(input);
+  const vague = '평소랑 조금 달라요';
+  assert.deepEqual(resolveQuestionAnswer(vague,false,false,meal), {answer:'',clarify:true});
+  assert.deepEqual(resolveQuestionAnswer('평소의 절반 정도',true,false,meal), {answer:'평소의 절반 정도',clarify:false});
+  input.answers.meal = vague;
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers.meal = resolveQuestionAnswer(vague,true,false,meal).answer;
+  assert.equal(validateIntake(input), null);
+  assert.ok(draft(input).missing.includes(meal.label));
+  assert.match(draft(input).hpi, /먹었나요\? 미확인 \(모르겠어요\)/);
+});

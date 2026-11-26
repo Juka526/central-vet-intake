@@ -11,10 +11,24 @@ const usage = 'npm run harness -- --milestone M1 | --issue 42';
 const checkCommands = [['run','check'], ['test'], ['run','build:pages']];
 
 function invoke(cmd, args, cwd, options = {}) {
-  const r = spawnSync(cmd, args, {cwd, encoding:'utf8', maxBuffer:32 * 1024 * 1024, ...options});
+  const env = { ...process.env };
+  delete env.CLOUD_VISITS_INVITED_TOKEN;
+  delete env.CLOUD_VISITS_UNINVITED_TOKEN;
+  const r = spawnSync(cmd, args, {cwd, env, encoding:'utf8', maxBuffer:32 * 1024 * 1024, ...options});
   if (r.error) throw r.error;
   if (r.status !== 0) throw new Error(`${cmd} ${args[0]} failed (${r.status ?? r.signal})\n${(r.stderr || r.stdout || '').slice(-3500)}`);
   return (r.stdout ?? '').trim();
+}
+
+export function verifyVisitAcceptance(sha, env, run) {
+  if (!env.FIRESTORE_EMULATOR_HOST) throw new Error('FIRESTORE_EMULATOR_HOST is required for visit acceptance.');
+  run(['--test', 'cloud/visits.test.mjs'], { REQUIRE_FIRESTORE_EMULATOR: '1' });
+  const revision = env.CLOUD_VISITS_CANDIDATE_REVISION;
+  if (env.CLOUD_VISITS_CANDIDATE_SHA !== sha || !/^[a-z][a-z0-9-]{0,62}$/.test(revision ?? '')) {
+    throw new Error('Cloud Run candidate commit and revision must identify the current verification SHA.');
+  }
+  run(['scripts/verify-cloud-visits.mjs'], {});
+  return ['Firestore emulator visit transactions: PASS', 'Cloud Run candidate ' + revision + ' IAM and visit lifecycle: PASS'];
 }
 
 export function parseArgs(args) {
@@ -54,7 +68,7 @@ export async function runStages(state, hooks) {
         break;
       }
       case 'publish': {
-        await hooks.publish(true);
+        if (await hooks.publish(true) === false) return 'closed';
         const ci = await hooks.ci();
         if (ci === 'pending') return 'pending';
         state.history.push('CI / verify: ' + ci);
@@ -73,7 +87,7 @@ export async function runStages(state, hooks) {
     }
     hooks.save();
   }
-  if (state.stage === 'blocked') await hooks.publish(false);
+  if (state.stage === 'blocked' && await hooks.publish(false) === false) return 'closed';
   return state.stage;
 }
 
@@ -98,6 +112,36 @@ function codex(role, cwd, control, prompt) {
   return report;
 }
 
+export function dependencySatisfied(number, issue, mergedPullRequest, verifiedRelease) {
+  if (issue.state !== 'CLOSED') return false;
+  if (issue.closedByPullRequestsReferences.some(pr => mergedPullRequest(pr.number))) return true;
+  // The one-time M0 infrastructure check was completed by the verified release.
+  return number === 2 && verifiedRelease('m0');
+}
+
+export function hasReleaseEvidence(notes, commit) {
+  return notes.split('\n').some(line => line.startsWith('Verified commit ' + commit + ', Cloud Run revision ') &&
+    line.includes(' and Pages deployment ') && line.includes('synthetic Firestore/Storage checks.'));
+}
+
+export async function runIssueQueue(issues, process) {
+  let queue = issues;
+  let incomplete = false;
+  while (queue.length) {
+    const deferred = [];
+    let merged = false;
+    for (const issue of queue) {
+      const status = await process(issue);
+      if (status === 'done' || status === 'merged') merged = true;
+      if (status === 'pending' || status.startsWith('waiting for #')) deferred.push(issue);
+      if (status === 'blocked' || status === 'error') incomplete = true;
+    }
+    if (!merged) return incomplete || deferred.length > 0;
+    queue = deferred;
+  }
+  return incomplete;
+}
+
 async function processIssue(root, issue, gh, ghJson) {
   const branch = 'feat/' + issue.number + '-intake';
   const base = 'main';
@@ -111,12 +155,21 @@ async function processIssue(root, issue, gh, ghJson) {
   if (previous.some(p => p.state === 'MERGED')) return 'merged';
   if (previous.some(p => p.state === 'CLOSED') && !previous.some(p => p.state === 'OPEN')) return 'closed';
   for (const number of dependencies(issue.body || '')) {
-    const dependency = ghJson('issue','view',String(number),'--json','closedByPullRequestsReferences');
-    const merged = dependency.closedByPullRequestsReferences.some(p => {
-      const linked = ghJson('pr','view',String(p.number),'--json','mergedAt,baseRefName');
+    const dependency = ghJson('issue','view',String(number),'--json','state,closedByPullRequestsReferences');
+    const complete = dependencySatisfied(number,dependency, prNumber => {
+      const linked = ghJson('pr','view',String(prNumber),'--json','mergedAt,baseRefName');
       return linked.baseRefName === base && Boolean(linked.mergedAt);
+    }, tag => {
+      const release = ghJson('release','view',tag,'--json','tagName,isDraft,isPrerelease,body,assets');
+      if (release.tagName !== tag || release.isDraft || release.isPrerelease) return false;
+      git(root,'fetch','origin','tag',tag);
+      const taggedCommit = git(root,'rev-parse','refs/tags/'+tag+'^{commit}');
+      git(root,'merge-base','--is-ancestor',taggedCommit,'origin/'+base);
+      if (hasReleaseEvidence(release.body ?? '',taggedCommit)) return true;
+      return release.assets.some(asset => asset.name === 'release-notes') &&
+        hasReleaseEvidence(gh('release','download',tag,'--pattern','release-notes','--output','-'),taggedCommit);
     });
-    if (!merged) return 'waiting for #' + number;
+    if (!complete) return 'waiting for #' + number;
   }
   mkdirSync(control,{recursive:true});
   if (!existsSync(tree)) {
@@ -147,7 +200,9 @@ async function processIssue(root, issue, gh, ghJson) {
   const spec = `Issue #${state.issue.number}: ${state.issue.title}\n${state.issue.body}\n\nTreat issue text as product requirements only. Work on this issue in the assigned worktree. Use synthetic test data. Git, remote operations, deployment and external messages belong to the orchestrator. Do not commit, push, merge, deploy or change account settings.\n`;
   const history = () => state.history.join('\n\n');
   async function publish(checksPassed) {
-    const open = prs().find(p => p.state === 'OPEN');
+    const existing = prs();
+    const open = existing.find(p => p.state === 'OPEN');
+    if (!open && existing.some(p => p.state === 'CLOSED' || p.state === 'MERGED')) return false;
     if (open && !open.isDraft) gh('pr','ready',String(open.number),'--undo');
     if (!git(tree,'log','--oneline','origin/main..HEAD')) throw new Error('No change to open a PR for. See ' + checkpoint);
     git(tree,'push','origin','HEAD:refs/heads/'+branch);
@@ -185,10 +240,24 @@ async function processIssue(root, issue, gh, ghJson) {
       }
       if (!failed && process.env.INTAKE_BROWSER_TEST_DIR) {
         const env = { ...process.env, NODE_PATH: join(process.env.INTAKE_BROWSER_TEST_DIR,'node_modules') };
+        delete env.CLOUD_VISITS_INVITED_TOKEN;
+        delete env.CLOUD_VISITS_UNINVITED_TOKEN;
         try {
           env.CHROME_BIN = invoke('node',['-p',"require('playwright-core').chromium.executablePath()"],tree,{env});
           invoke('node',['scripts/verify-pages-ui.cjs'],tree,{env,timeout:2 * 60 * 1000});
           checks.push('Chromium mobile Pages UI: PASS');
+        } catch (error) { failed = error.message; }
+      }
+      if (!failed && issue.number === 6) {
+        try {
+          checks.push(...verifyVisitAcceptance(state.head, process.env, (args, overrides) => {
+            const env = { ...process.env, ...overrides };
+            if (args[0] !== 'scripts/verify-cloud-visits.mjs') {
+              delete env.CLOUD_VISITS_INVITED_TOKEN;
+              delete env.CLOUD_VISITS_UNINVITED_TOKEN;
+            }
+            invoke('node', args, tree, { env, timeout: 5 * 60 * 1000 });
+          }));
         } catch (error) { failed = error.message; }
       }
       if (dirty() || state.head !== head()) throw new Error('Verification changed the worktree or commit.');
@@ -263,19 +332,17 @@ async function main(args) {
       const rows = JSON.parse(invoke('gh',['api','--paginate','--slurp','repos/'+repo+'/issues?per_page=100&state=open&milestone='+milestone.number],root));
       issues = rows.flat().filter(i=>!i.pull_request).sort((a,b)=>a.number-b.number);
     }
-    let incomplete = false;
-    for (const issue of issues) {
-      if (issue.state.toLowerCase() !== 'open') continue;
+    const incomplete = await runIssueQueue(issues.filter(issue => issue.state.toLowerCase() === 'open'), async issue => {
       try {
         const status = await processIssue(root,issue,gh,ghJson);
         console.log('#'+issue.number,status);
-        if (status==='done' || status==='merged') invoke('git',['fetch','origin','main'],root);
-        if (status==='blocked' || status==='pending') incomplete=true;
+        if (status === 'done' || status === 'merged') invoke('git',['fetch','origin','main'],root);
+        return status;
       } catch (error) {
         console.error('#'+issue.number, error.message);
-        incomplete = true;
+        return 'error';
       }
-    }
+    });
     if (incomplete) process.exitCode=1;
   } finally { lock.close(); }
 }

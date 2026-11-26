@@ -69,8 +69,12 @@ async function chat(request, env, room) {
 }
 
 async function intake(request, env, path) {
-  if (path !== '/api/intake/storage-check') return json({ error: 'Unknown intake route' }, 404);
-  if (request.method !== 'POST') return json({ error: 'POST required' }, 405);
+  const probe = path === '/api/intake/storage-check';
+  if (probe && request.method !== 'POST') return json({ error: 'POST required' }, 405);
+  if (!probe && !['GET', 'POST', 'DELETE'].includes(request.method))
+    return json({ error: '지원하지 않는 요청입니다.' }, 405);
+  if (!probe && request.headers.get('Origin') && request.headers.get('Origin') !== new URL(request.url).origin)
+    return json({ error: '허용되지 않은 출처입니다.' }, 403);
   const target = env.INTAKE_API_ORIGIN || (typeof builtIntakeApiOrigin === 'string' && builtIntakeApiOrigin);
   if (!target) return json({ error: 'Cloud Run is not configured' }, 503);
   const auth = request.headers.get('Authorization');
@@ -79,12 +83,26 @@ async function intake(request, env, path) {
     const origin = new URL(target);
     if (origin.protocol !== 'https:' || !origin.hostname.endsWith('.run.app') || origin.origin !== target)
       return json({ error: 'Invalid Cloud Run origin' }, 503);
+    const headers = new Headers({ [probe ? 'Authorization' : 'X-Serverless-Authorization']: auth });
+    if (!probe) {
+      for (const name of ['Content-Type', 'X-Demo-Role', 'Idempotency-Key']) {
+        if (request.headers.has(name)) headers.set(name, request.headers.get(name));
+      }
+    }
     const result = await fetch(origin.origin + path, {
-      method: 'POST', headers: { Authorization: auth }, redirect: 'manual',
+      method: request.method, headers, redirect: 'manual',
+      body: probe || request.method === 'GET' ? undefined : request.body,
     });
     if (result.status >= 300 && result.status < 400) return json({ error: 'Unexpected upstream redirect' }, 502);
+    const type = result.headers.get('Content-Type');
+    const audio = request.method === 'GET' && path.endsWith('/audio') &&
+      result.status === 200 && ['audio/webm', 'audio/ogg', 'audio/mp4'].includes(type);
+    if (!probe && !audio && !type?.includes('application/json')) {
+      if ([401, 403].includes(result.status)) return json({ error: '초대 권한과 ID 토큰을 확인해 주세요.' }, result.status);
+      return json({ error: '클라우드 문진에 연결하지 못했습니다.' }, 502);
+    }
     return new Response(result.body, { status: result.status, headers: {
-      'Content-Type': result.headers.get('Content-Type') || 'application/json',
+      'Content-Type': type || 'application/json',
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
     } });
   } catch { return json({ error: 'Cloud Run unavailable' }, 502); }
@@ -93,7 +111,10 @@ async function intake(request, env, path) {
 export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
-    if (path.startsWith('/api/intake/')) return intake(request, env, path);
+    if (path === '/api/intake/audio-cleanup' && request.method !== 'POST')
+      return json({ error: 'POST required' }, 405);
+    if (path === '/api/intake/audio-cleanup' || path === '/api/intake/storage-check' || path === '/api/session' || path === '/api/intakes' ||
+        /^\/api\/intakes\/[0-9a-f-]{36}(?:\/(review|export|audio))?$/.test(path)) return intake(request, env, path);
     if (path === '/api/klat/status' && request.method === 'GET') {
       // A fixed, synthetic lookup checks authentication without returning customer data.
       try {

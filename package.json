@@ -4,5 +4,5 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.13" },
-  "scripts": { "harness": "node scripts/harness.mjs", "build:pages": "node scripts/build-pages.mjs", "start": "node server.mjs", "test": "node --test test/*.test.mjs", "check": "node --check server.mjs && node --check public/app.js && node --check lib/engine.mjs" }
+  "scripts": { "harness": "node scripts/harness.mjs", "build:pages": "node scripts/build-pages.mjs", "start": "node server.mjs", "test": "node --test test/*.test.mjs cloud/visits.test.mjs", "check": "node --check server.mjs && node --check public/app.js && node --check lib/engine.mjs" }
 }
