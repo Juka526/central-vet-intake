@@ -857,3 +857,63 @@ test('식사 횟수를 구토 횟수에 답하면 한 번 더 묻고 계속 불�
   assert.ok(result.timeline.some(item => item.label === slot.label && item.text === '미확인 (모르겠어요)'));
   assert.equal(input.answers.meal, '사료를 절반만 먹었어요');
 });
+
+test('처음 토한 날의 횟수와 다음 날의 생략된 횟수를 각각 확인하고 정정한다', () => {
+  const input = confirm(intake('어제 처음 두 번 토했어요. 오늘 세 번 더 했어요. 사료를 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(({label,answer}) => [label,answer]), [
+    ['어제 몇 번 토했나요?', '2회'], ['오늘 몇 번 토했나요?', '3회'],
+  ]);
+  assert.equal(input.answers['vomit-onset'], '어제');
+  assert.deepEqual(remaining(input), []);
+  for (const slot of counts) {
+    const answers = {...input.answers};
+    delete answers[slot.id];
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  }
+  input.answers[counts[0].id] = '4회';
+  input.corrections = [counts[0].id];
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.deepEqual(readPagesDraft(id).timeline.filter(item => item.label.includes('몇 번')), [
+    {label:'어제 몇 번 토했나요?',text:'4회 (보호자 정정)'},
+    {label:'오늘 몇 번 토했나요?',text:'3회'},
+  ]);
+  const saved = {...input,draft:{timeline:[]}, answers:{'vomit-onset':'어제','vomit-count':'2회'}};
+  assert.ok(intakeQuestions(saved).some(slot => slot.id === 'vomit-count' && slot.answer === '2회'));
+});
+
+test('오늘도 그랬다는 말은 이전 증상의 오늘 횟수를 필수로 남긴다', () => {
+  const input = confirm(intake('어제 두 번 토했어요. 오늘도 그랬어요. 사료를 절반만 먹었어요.'));
+  input.answers['vomit-onset'] = '어제';
+  assert.deepEqual(remaining(input).map(slot => slot.label), ['오늘 몇 번 토했나요?']);
+  const [today] = remaining(input);
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[today.id] = '모르겠어요';
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.deepEqual(readPagesDraft(id).timeline.filter(item => item.label.includes('몇 번')), [
+    {label:'어제 몇 번 토했나요?',text:'2회'},
+    {label:'오늘 몇 번 토했나요?',text:'미확인 (모르겠어요)'},
+  ]);
+  for (const report of ['오늘도 그랬어요.', '오늘 세 번 더 했어요.']) {
+    const ambiguous = intake('어제 구토와 설사가 있었어요. ' + report);
+    assert.ok(intakeQuestions(ambiguous).every(slot => !slot.label.startsWith('오늘')), report);
+  }
+});
+
+test('재진 복용약이 불명확하면 약 이름을 한 번 더 묻고 미확인으로 남긴다', () => {
+  const input = confirm(intake(short + ' 기존 질환은 없어요. 지난 진료 이후 괜찮았어요.', {visitType:'return'}));
+  input.answers['vomit-course'] = '모르겠어요';
+  const meds = intakeQuestions(input).find(slot => slot.id === 'meds');
+  assert.deepEqual(resolveQuestionAnswer('괜찮아요',false,false,meds), {answer:'',clarify:true});
+  assert.match(clarification(meds), /약이나 영양제의 이름/u);
+  input.answers.meds = '괜찮아요';
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  const retry = resolveQuestionAnswer('괜찮아요',true,false,meds);
+  assert.deepEqual(retry, {answer:'모르겠어요',clarify:false});
+  for (const [answer,display] of [[retry.answer,'미확인 (모르겠어요)'],['없어요','없어요'],['영양제 A','영양제 A']]) {
+    assert.deepEqual(resolveQuestionAnswer(answer,true,false,meds), {answer,clarify:false});
+    input.answers.meds = answer;
+    const {id} = pages('/api/intakes',{method:'POST',body:input});
+    assert.ok(readPagesDraft(id).hpi.includes(meds.label + ' ' + display));
+  }
+});
