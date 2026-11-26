@@ -917,3 +917,32 @@ test('재진 복용약이 불명확하면 약 이름을 한 번 더 묻고 미�
     assert.ok(readPagesDraft(id).hpi.includes(meds.label + ' ' + display));
   }
 });
+
+
+test('시각만 이어 말하면 같은 증상의 날짜를 이어서 필수 횟수를 각각 묻는다', () => {
+  const input = confirm(intake('어제 두 번 토했어요. 오늘 아침에 기침했고 저녁에 기침했어요. 사료를 절반만 먹었어요.'));
+  const count = intakeQuestions(input).filter(slot => slot.id.startsWith('cough-count'));
+  assert.deepEqual(count.map(({label,answer}) => [label,answer]), [
+    ['오늘 아침 기침이 몇 번 있었나요?', ''], ['오늘 저녁 기침이 몇 번 있었나요?', ''],
+  ]);
+  for (const slot of remaining(input).filter(slot => !slot.id.startsWith('cough-count'))) input.answers[slot.id] = '모르겠어요';
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[count[0].id] = '2회';
+  input.answers[count[1].id] = '1회';
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  assert.match(draft(input).hpi, /오늘 저녁 기침이 몇 번 있었나요\? 1회/u);
+});
+
+test('서로 다른 시작 시점은 한 번 명확히 되묻고 끝내 모르면 미확인으로 남긴다', () => {
+  const input = confirm(intake('두 번 토했어요. 사료를 절반만 먹었어요.'));
+  const onset = intakeQuestions(input).find(slot => slot.id === 'vomit-onset');
+  for (const vague of ['어제나 오늘', '어제 또는 오늘', '어제 저녁부터 오늘 새벽 사이']) {
+    assert.deepEqual(resolveQuestionAnswer(vague,false,false,onset), {answer:'',clarify:true});
+    input.answers[onset.id] = vague;
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  }
+  assert.deepEqual(resolveQuestionAnswer('어제 저녁 8시',true,false,onset), {answer:'어제 저녁 8시',clarify:false});
+  input.answers[onset.id] = resolveQuestionAnswer('어제나 오늘',true,false,onset).answer;
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  assert.ok(draft(input).missing.includes(onset.label));
+});
