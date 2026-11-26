@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { test } from 'node:test';
-import { QUESTION_VERSION, RISKS, draft, intakeQuestions, resolveQuestionAnswer, validateIntake } from '../lib/engine.mjs';
+import { QUESTION_VERSION, RISKS, clarification, draft, intakeQuestions, resolveQuestionAnswer, validateIntake } from '../lib/engine.mjs';
 import { request as pages } from '../pages/demo.mjs';
 import { createApplication } from '../server.mjs';
 import { fixture } from './fixture.mjs';
@@ -554,4 +554,45 @@ test('먹었다는 사실이나 안심 표현만으로 양이 확인되지는 �
     assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
     assert.ok(draft(input).missing.includes(slot.label));
   }
+});
+
+test('접속 조사로 연결한 날짜별 횟수는 각각 확인하고 한쪽만 정정할 수 있다', () => {
+  const input = confirm(intake('어제부터 토했어요. 어제 두 번이랑 오늘 한 번 토했어요. 밥을 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts.map(({label,answer}) => [label,answer]), [
+    ['어제 몇 번 토했나요?', '2회'], ['오늘 몇 번 토했나요?', '1회'],
+  ]);
+  assert.deepEqual(remaining(input), []);
+  for (const slot of counts) {
+    const answers = {...input.answers};
+    delete answers[slot.id];
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  }
+  input.answers[counts[0].id] = '3회';
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  pages('/api/login',{method:'POST',body:{role:'vet'}});
+  try {
+    const {draft:result} = pages('/api/intakes/'+id);
+    assert.match(result.hpi, /어제 몇 번 토했나요\? 3회 \(보호자 정정\)/u);
+    assert.match(result.hpi, /오늘 몇 번 토했나요\? 1회\n/u);
+  } finally {
+    pages('/api/logout');
+  }
+});
+
+test('불명확한 재진 병력은 한 번 되묻고 명시적인 없음과 미확인을 구분한다', () => {
+  const input = confirm(intake(short + ' 먹는 약은 없어요. 지난 진료 이후 괜찮았어요.', {visitType:'return'}));
+  const history = intakeQuestions(input).find(slot => slot.id === 'history');
+  const vague = '괜찮아요';
+  assert.deepEqual(resolveQuestionAnswer(vague,false,false,history), {answer:'',clarify:true});
+  assert.match(clarification(history), /진단받은 질환의 이름/u);
+  for (const answer of ['없어요','당뇨 진단을 받았어요']) {
+    assert.deepEqual(resolveQuestionAnswer(answer,true,false,history), {answer,clarify:false});
+  }
+  input.answers['vomit-course'] = '모르겠어요';
+  input.answers.history = vague;
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /병력 후속 질문/);
+  input.answers.history = resolveQuestionAnswer(vague,true,false,history).answer;
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  assert.match(draft(input).hpi, /진단받은 질환이 있나요\? 미확인 \(모르겠어요\)/u);
 });
