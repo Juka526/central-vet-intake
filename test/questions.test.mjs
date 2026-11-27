@@ -1340,3 +1340,52 @@ test('배뇨 빈도가 어떻게 달라졌는지 한 번 되묻고 모르면 Pag
   assert.ok(hpi.includes(slot.label + ' 미확인 (모르겠어요)'));
   assert.match(hpi, /소변 양이 줄었어요/u);
 });
+
+test('오늘 토한 뒤 현재 구토가 멈춰도 어제와 오늘 횟수를 각각 확인한다', () => {
+  const input = confirm(intake('어제 토했어요. 오늘 토한 뒤 지금은 토하지 않아요. 밥은 절반 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts.map(({label,required,answer}) => [label,required,answer]), [
+    ['어제 몇 번 토했나요?',true,''], ['오늘 몇 번 토했나요?',true,''],
+  ]);
+  for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+  delete input.answers[counts[1].id];
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[counts[1].id] = '1회';
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.match(readPagesDraft(id).hpi, /오늘 몇 번 토했나요\? 1회/u);
+});
+
+test('오늘은 구토도 하고 설사도 했으면 각 증상에 오늘 횟수 질문이 생긴다', () => {
+  const input = confirm(intake('어제 토했어요. 오늘은 구토도 하고 설사도 했어요. 밥은 절반 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(({label,required,answer}) => [label,required,answer]), [
+    ['어제 몇 번 토했나요?',true,''], ['오늘 몇 번 토했나요?',true,''],
+    ['오늘 설사가 몇 번 있었나요?',true,''],
+  ]);
+  for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+  for (const {id} of counts) {
+    const answers = {...input.answers};
+    delete answers[id];
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  }
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+});
+
+test('재진 병력에 식사량으로 답하면 한 번 되묻고 계속 벗어나면 미확인으로 남긴다', () => {
+  const input = confirm(intake(short + ' 먹는 약은 없어요. 지난 진료 이후 괜찮았어요.', {visitType:'return'}));
+  const slot = remaining(input).find(item => item.id === 'history');
+  const reply = '밥은 절반 먹었어요';
+  assert.deepEqual(resolveQuestionAnswer(reply,false,false,slot), {answer:'',clarify:true});
+  assert.match(clarification(slot), /진단받은 질환의 이름/u);
+  const resolved = resolveQuestionAnswer(reply,true,false,slot);
+  assert.deepEqual(resolved, {answer:'모르겠어요',clarify:false});
+  for (const other of remaining(input)) input.answers[other.id] = '모르겠어요';
+  input.answers.history = reply;
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /병력 후속 질문/);
+  input.answers.history = resolved.answer;
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const {hpi,missing} = readPagesDraft(id);
+  assert.ok(missing.includes(slot.label));
+  assert.ok(hpi.includes(slot.label + ' 미확인 (모르겠어요)'));
+  assert.equal(input.answers.meal, '사료를 절반만 먹었어요');
+});
