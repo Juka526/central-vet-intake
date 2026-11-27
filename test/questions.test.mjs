@@ -1037,3 +1037,33 @@ test('한 문장에서 구토 시작과 이후의 날짜가 있는 경과를 분
   const result = readPagesDraft(id);
   assert.match(result.hpi, /오늘 구토 경과는 어떻게 달라졌나요\? 심해졌어요/u);
 });
+
+for (const {complaint, day, count} of [
+  {complaint:'어제 처음 두 번 토했어요. 오늘도 두 번이에요. 사료를 절반만 먹었어요.', day:'오늘', count:'2회'},
+  {complaint:'어제 두 번 토했고 이틀 전에도 한 번 토했어요. 사료를 절반만 먹었어요.', day:'이틀 전', count:'1회'},
+]) {
+  test(`${day}의 구토 횟수를 별도로 확인하고 정정한 뒤 Pages에서 조회한다`, () => {
+    const input = confirm(intake(complaint));
+    const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+    assert.deepEqual(counts.map(({label,answer,required}) => [label,answer,required]), [
+      ['어제 몇 번 토했나요?', '2회', true], [`${day} 몇 번 토했나요?`, count, true],
+    ]);
+    input.answers['vomit-onset'] ??= '이틀 전';
+    assert.deepEqual(remaining(input), []);
+    for (const {id} of counts) {
+      const answers = {...input.answers};
+      delete answers[id];
+      assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+    }
+    const corrected = resolveQuestionAnswer(`${day}에는 세 번 토했어요.`,false,false,counts[1]);
+    assert.equal(corrected.clarify, false);
+    input.answers[counts[1].id] = corrected.answer;
+    const {id} = pages('/api/intakes',{method:'POST',body:input});
+    const result = readPagesDraft(id);
+    assert.deepEqual(result.timeline.filter(item => item.label.includes('몇 번')), [
+      {label:counts[0].label,text:'2회'},
+      {label:counts[1].label,text:`${corrected.answer} (보호자 정정)`},
+    ]);
+    assert.ok(result.timeline.some(item => item.label === `구토 관찰 시점 · ${day}` && item.text === day));
+  });
+}
