@@ -1275,3 +1275,68 @@ test('밥그릇 부재는 관찰한 식사량이 아니므로 한 번 다시 묻
   input.answers[slot.id] = '아예 안 먹었어요.';
   assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
 });
+
+test('명시한 구토와 설사만 시작 시점을 공유하고 앞서 말한 기침은 별도로 확인한다', () => {
+  const input = confirm(intake('오늘 기침 한 번 했어요. 구토와 설사는 둘 다 어제부터예요. 사료를 절반만 먹었어요.'));
+  assert.deepEqual(intakeQuestions(input).filter(slot => slot.id.endsWith('-onset'))
+    .map(({id,answer}) => [id,answer]).sort(),
+  [['cough-onset',''],['diarrhea-onset','어제'],['vomit-onset','어제']]);
+  for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+  for (const key of ['vomit-count','diarrhea-count']) {
+    const answers = {...input.answers};
+    delete answers[key];
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  }
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.match(readPagesDraft(id).hpi, /설사의 첫 증상은 언제였나요\? 어제/u);
+});
+
+test('같은 날 이어 말한 구토와 설사는 날짜별 횟수를 확인하고 한 값만 정정한다', () => {
+  const input = confirm(intake('어제는 두 번 토하고 설사를 세 번 했어요. 오늘은 한 번 토하고 설사를 네 번 했어요. 사료를 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(({id,period,answer}) => [id.split('-')[0],period,answer]), [
+    ['vomit','어제','2회'],['diarrhea','어제','3회'],['vomit','오늘','1회'],['diarrhea','오늘','4회'],
+  ]);
+  for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+  for (const {id} of counts) {
+    const answers = {...input.answers};
+    delete answers[id];
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  }
+  input.answers[counts[1].id] = '5회';
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.deepEqual(readPagesDraft(id).timeline.filter(item => item.label.includes('몇 번')), [
+    {label:counts[0].label,text:'2회'}, {label:counts[1].label,text:'5회 (보호자 정정)'},
+    {label:counts[2].label,text:'1회'}, {label:counts[3].label,text:'4회'},
+  ]);
+  const saved = intake(input.complaint,{draft:{timeline:[]},answers:{'diarrhea-count':'3회'}});
+  assert.equal(intakeQuestions(saved).find(slot => slot.id === 'diarrhea-count')?.answer,'3회');
+
+  const separate = confirm(intake('어제 두 번 토하고 오늘은 설사를 세 번 했어요.'));
+  assert.deepEqual(intakeQuestions(separate).filter(slot => slot.id.includes('-count'))
+    .map(({period,answer}) => [period,answer]), [['어제','2회'],['오늘','3회']]);
+});
+
+test('배뇨 빈도가 어떻게 달라졌는지 한 번 되묻고 모르면 Pages 초안에 미확인으로 남긴다', () => {
+  const input = confirm(intake('어제부터 구토했어요. 소변 양이 줄었어요. 사료를 절반만 먹었어요.'));
+  const slot = remaining(input).find(item => item.id === 'urine-frequency');
+  for (const other of remaining(input)) input.answers[other.id] = '모르겠어요';
+  const reply = '평소와 달라요.';
+  assert.deepEqual(resolveQuestionAnswer(reply,false,false,slot), {answer:'',clarify:true});
+  assert.deepEqual(resolveQuestionAnswer('소변 보는 횟수가 평소랑 달라요.',false,false,slot),
+    {answer:'',clarify:true});
+  assert.match(clarification(slot), /더 자주.*덜 자주/u);
+  const resolved = resolveQuestionAnswer(reply,true,false,slot);
+  assert.deepEqual(resolved, {answer:'모르겠어요',clarify:false});
+  for (const answer of ['더 자주 봤어요.', '하루에 세 번 봤어요.', '평소와 같아요.', '없어요.']) {
+    assert.deepEqual(resolveQuestionAnswer(answer,true,false,slot), {answer,clarify:false});
+  }
+  input.answers[slot.id] = reply;
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[slot.id] = resolved.answer;
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const {hpi,missing} = readPagesDraft(id);
+  assert.ok(missing.includes(slot.label));
+  assert.ok(hpi.includes(slot.label + ' 미확인 (모르겠어요)'));
+  assert.match(hpi, /소변 양이 줄었어요/u);
+});
