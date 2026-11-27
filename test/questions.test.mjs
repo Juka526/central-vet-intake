@@ -1413,3 +1413,55 @@ test('어느 쪽으로 달라 보였는지 모호하면 활력 답변을 다시 
   assert.deepEqual(resolveQuestionAnswer('평소보다 덜 움직였어요.',false,false,slot),
     {answer:'평소보다 덜 움직였어요.',clarify:false});
 });
+
+test('같은 날 쉼표로 이어진 단독 시각의 필수 횟수를 Pages에서 각각 확인한다', () => {
+  const input = confirm(intake('오늘 오전 8시에 한 번, 10시에 두 번 토했어요. 처음 토한 건 어제였어요. 사료를 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts.map(({period,answer,required}) => [period,answer,required]), [
+    ['오늘 오전 8시','1회',true], ['오늘 10시','2회',true],
+  ]);
+  assert.equal(input.answers['vomit-onset'], '어제');
+  for (const {id} of counts) {
+    const answers = {...input.answers};
+    delete answers[id];
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  }
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.deepEqual(readPagesDraft(id).timeline.filter(item => item.label.includes('몇 번')),
+    counts.map(({label,answer}) => ({label,text:answer})));
+});
+
+test('하고로 연결해 시작 시점을 공유한 두 증상의 필수 횟수를 각각 확인한다', () => {
+  const input = confirm(intake('어제부터 기침했어요. 구토하고 설사 둘 다 오늘부터였어요. 사료를 절반만 먹었어요.'));
+  assert.deepEqual(intakeQuestions(input).filter(slot => slot.id.endsWith('-onset'))
+    .map(({id,answer}) => [id,answer]).sort(), [
+    ['cough-onset','어제'], ['diarrhea-onset','오늘'], ['vomit-onset','오늘'],
+  ]);
+  assert.deepEqual(remaining(input).map(({id}) => id).sort(), ['cough-count','diarrhea-count','vomit-count']);
+  Object.assign(input.answers, {'cough-count':'3회','vomit-count':'1회','diarrhea-count':'2회'});
+  for (const key of ['vomit-count','diarrhea-count']) {
+    const answers = {...input.answers};
+    delete answers[key];
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  }
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.match(readPagesDraft(id).hpi, /설사의 첫 증상은 언제였나요\? 오늘/u);
+});
+
+test('다른 단독 시각의 정정은 재확인하고 해당 시각의 답만 초안에 반영한다', () => {
+  const input = confirm(intake('어제부터 토했어요. 오늘 오전 8시에 한 번, 오전 10시에 두 번 토했어요. 사료를 절반만 먹었어요.'));
+  const [eight,ten] = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  const reply = '10시에 두 번 토했어요.';
+  assert.deepEqual(resolveQuestionAnswer(reply,false,false,eight), {answer:'',clarify:true});
+  assert.match(clarification(eight), /^오늘 오전 8시/u);
+  assert.deepEqual(resolveQuestionAnswer(reply,true,false,eight), {answer:'모르겠어요',clarify:false});
+  input.answers[eight.id] = reply;
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /횟수 후속 질문/);
+  const correction = '8시에 세 번 토했어요.';
+  assert.deepEqual(resolveQuestionAnswer(correction,true,false,eight), {answer:correction,clarify:false});
+  input.answers[eight.id] = correction;
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.deepEqual(readPagesDraft(id).timeline.filter(item => item.label.includes('몇 번')), [
+    {label:eight.label,text:correction+' (보호자 정정)'}, {label:ten.label,text:'2회'},
+  ]);
+});
