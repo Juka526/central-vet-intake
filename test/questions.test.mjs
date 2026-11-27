@@ -1238,3 +1238,40 @@ test('재진 경과의 모호한 답변은 한 번 되묻고 계속 모호하면
   assert.deepEqual(resolveQuestionAnswer('전보다 구토가 줄었어요',true,false,slot),
     {answer:'전보다 구토가 줄었어요',clarify:false});
 });
+
+test('오늘도 함께 관찰한 두 증상은 각각 오늘 횟수 확인이 필요하다', () => {
+  for (const reply of ['오늘도 설사랑 구토를 했어요','오늘에도 구토와 설사가 있었어요']) {
+    const input = confirm(intake('어제 두 번 토했고 '+reply+'. 사료를 절반만 먹었어요.'));
+    const slots = intakeQuestions(input).filter(slot => /^(vomit|diarrhea)-count/u.test(slot.id));
+    assert.deepEqual(slots.map(({id,period,answer}) => [id.split('-')[0],period,answer]), [
+      ['vomit','어제','2회'],['vomit','오늘',''],['diarrhea','오늘',''],
+    ]);
+    for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+    for (const {id} of slots.filter(slot => slot.period === '오늘')) {
+      const answers = {...input.answers};
+      delete answers[id];
+      assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+    }
+    assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  }
+});
+
+test('다음과 다음에로 연결된 연속 관찰에서 날짜별 횟수를 확인한다', () => {
+  for (const link of ['다음','다음에']) {
+    const input = confirm(intake('어제 두 번 토한 '+link+' 오늘 한 번 더 토했어요. 사료를 절반만 먹었어요.'));
+    const slots = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+    assert.deepEqual(slots.map(({period,answer}) => [period,answer]), [['어제','2회'],['오늘','1회']]);
+  }
+});
+
+test('밥그릇 부재는 관찰한 식사량이 아니므로 한 번 다시 묻는다', () => {
+  const input = confirm(intake('어제부터 두 번 토했어요.'));
+  const slot = remaining(input).find(item => item.id === 'meal');
+  const reply = '밥그릇이 없어요.';
+  assert.deepEqual(resolveQuestionAnswer(reply,false,false,slot), {answer:'',clarify:true});
+  assert.deepEqual(resolveQuestionAnswer(reply,true,false,slot), {answer:'모르겠어요',clarify:false});
+  input.answers[slot.id] = reply;
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[slot.id] = '아예 안 먹었어요.';
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+});
