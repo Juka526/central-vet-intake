@@ -1067,3 +1067,55 @@ for (const {complaint, day, count} of [
     assert.ok(result.timeline.some(item => item.label === `구토 관찰 시점 · ${day}` && item.text === day));
   });
 }
+
+for (const {complaint, counts, onsets, observations} of [
+  {
+    complaint:'어제 두 번 토했어요. 오늘 토했지만 지금은 안 토해요. 사료를 절반만 먹었어요.',
+    counts:[['어제 몇 번 토했나요?', '2회'], ['오늘 몇 번 토했나요?', '']],
+    onsets:{'vomit-onset':'어제'},
+    observations:[['구토', '어제'], ['구토', '오늘']],
+  },
+  {
+    complaint:'어제부터 토했어요. 오늘 아침과 저녁에 구토와 설사가 있었어요. 사료를 절반만 먹었어요.',
+    counts:[
+      ['오늘 아침 몇 번 토했나요?', ''], ['오늘 저녁 몇 번 토했나요?', ''],
+      ['오늘 아침 설사가 몇 번 있었나요?', ''], ['오늘 저녁 설사가 몇 번 있었나요?', ''],
+    ],
+    onsets:{'diarrhea-onset':'오늘 아침'},
+    observations:[['구토', '오늘 아침'], ['구토', '오늘 저녁'], ['설사', '오늘 아침'], ['설사', '오늘 저녁']],
+  },
+]) {
+  test(complaint + ' Pages에서 관찰 시점별 필수 횟수를 검증한다', () => {
+    const input = confirm(intake(complaint));
+    Object.assign(input.answers, onsets);
+    assert.equal(input.answers['vomit-onset'], '어제');
+    const slots = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+    assert.deepEqual(slots.map(({label,answer,required}) => [label,answer,required]),
+      counts.map(row => [...row,true]));
+    assert.deepEqual(remaining(input), slots.filter(slot => !slot.answer));
+    for (const [index, slot] of slots.entries()) input.answers[slot.id] ||= (index + 1) + '회';
+    for (const slot of slots) {
+      const answers = {...input.answers};
+      delete answers[slot.id];
+      assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/, slot.label);
+    }
+    const {id} = pages('/api/intakes',{method:'POST',body:input});
+    const {timeline} = readPagesDraft(id);
+    for (const slot of slots) assert.ok(timeline.some(item => item.label === slot.label && item.text === input.answers[slot.id]));
+    for (const [name,period] of observations) {
+      assert.ok(timeline.some(item => item.label === name+' 관찰 시점 · '+period && item.text === period));
+    }
+  });
+}
+
+test('식사와 음수를 이어 말하면 후보가 따로 표시되고 식사량을 다시 묻지 않는다', () => {
+  const input = confirm(intake('어제부터 두 번 토했어요. 오늘 밥을 반 먹고 물을 평소보다 많이 마셨어요.'));
+  const slots = intakeQuestions(input).filter(slot => ['meal','water'].includes(slot.id));
+  assert.deepEqual(slots.map(({id,answer}) => [id,answer]), [
+    ['meal','밥을 반 먹고'], ['water','물을 평소보다 많이 마셨어요'],
+  ]);
+  assert.deepEqual(remaining(input), []);
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const {hpi} = readPagesDraft(id);
+  for (const {label,answer} of slots) assert.ok(hpi.includes(label+' '+answer));
+});
