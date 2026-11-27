@@ -1199,3 +1199,42 @@ test('명시한 물 한 컵은 식사량과 별도 후보로 Pages 초안에 반
   const {id} = pages('/api/intakes',{method:'POST',body:input});
   assert.match(readPagesDraft(id).hpi, /물은 평소와 비교해 얼마나 마셨나요\? 물을 한 컵 마셨어요/u);
 });
+
+test('반복 구토의 횟수를 원문에서 모른다고 해도 해당 날짜의 직접 답변이 필요하다', () => {
+  const input = confirm(intake('사흘 전부터 토했어요. 어제 두 번 토했어요. 오늘은 또 그랬는데 몇 번인지 모르겠어요. 사료를 절반만 먹었어요.'));
+  const label = '오늘 몇 번 토했나요?';
+  const [slot] = remaining(input);
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  assert.deepEqual(remaining(input).map(item => item.label), [label]);
+  assert.equal(slot.candidate, null);
+  input.answers[slot.id] = resolveQuestionAnswer('모르겠어요',false,false,slot).answer;
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const {hpi,missing} = readPagesDraft(id);
+  assert.ok(hpi.includes(label + ' 미확인 (모르겠어요)'));
+  assert.ok(missing.includes(label));
+  assert.match(hpi, /어제 몇 번 토했나요\? 2회/u);
+});
+
+test('각각이라고 명시하면 같은 횟수를 시간대별 후보로 확인할 수 있다', () => {
+  const input = confirm(intake('어제 오전 8시와 오후 3시에 각각 한 번 토했어요. 사료를 절반만 먹었어요.'));
+  input.answers['vomit-onset'] = '어제 오전 8시';
+  const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts.map(({period,answer}) => [period,answer]),
+    [['어제 오전 8시','1회'],['어제 오후 3시','1회']]);
+  input.answers[counts[0].id] = '2회';
+  assert.deepEqual(remaining(input), []);
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const {timeline} = readPagesDraft(id);
+  assert.ok(timeline.some(item => item.label === counts[0].label && item.text === '2회 (보호자 정정)'));
+  assert.ok(timeline.some(item => item.label === counts[1].label && item.text === '1회'));
+});
+
+test('재진 경과의 모호한 답변은 한 번 되묻고 계속 모호하면 미확인으로 남긴다', () => {
+  const input = confirm(intake(short,{visitType:'return'}));
+  const slot = remaining(input).find(item => item.id === 'vomit-course');
+  assert.deepEqual(resolveQuestionAnswer('그럭저럭이에요',false,false,slot), {answer:'',clarify:true});
+  assert.match(clarification(slot), /좋아졌나요.*심해졌나요.*그대로인가요/u);
+  assert.deepEqual(resolveQuestionAnswer('그럭저럭이에요',true,false,slot), {answer:'모르겠어요',clarify:false});
+  assert.deepEqual(resolveQuestionAnswer('전보다 구토가 줄었어요',true,false,slot),
+    {answer:'전보다 구토가 줄었어요',clarify:false});
+});
