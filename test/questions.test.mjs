@@ -995,3 +995,45 @@ test('모호한 활력 답변은 한 번 더 묻고 Pages 초안에서 미확인
   assert.ok(result.hpi.includes(slot.label + ' 미확인 (모르겠어요)'));
   assert.ok(result.missing.includes(slot.label));
 });
+
+test('구토 횟수라는 주제 뒤에 이어진 날짜별 횟수를 Pages에서 각각 확인한다', () => {
+  const input = confirm(intake('어제부터 토했어요. 토한 횟수는 어제 2회, 오늘 1회예요. 밥은 반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts.map(({label,answer,required}) => [label,answer,required]), [
+    ['어제 몇 번 토했나요?', '2회', true], ['오늘 몇 번 토했나요?', '1회', true],
+  ]);
+  const answers = {...input.answers};
+  delete answers[counts[1].id];
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.deepEqual(readPagesDraft(id).timeline.filter(item => item.label.includes('몇 번')), [
+    {label:'어제 몇 번 토했나요?',text:'2회'}, {label:'오늘 몇 번 토했나요?',text:'1회'},
+  ]);
+});
+
+test('음수 비교는 식사량을 확정하지 않는다', () => {
+  const input = confirm(intake('어제부터 두 번 토했어요.'));
+  const [meal] = remaining(input);
+  const reply = '물은 평소와 같고 밥은 먹었어요.';
+  assert.equal(meal.id, 'meal');
+  assert.deepEqual(resolveQuestionAnswer(reply,false,false,meal), {answer:'',clarify:true});
+  input.answers.meal = reply;
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  assert.deepEqual(resolveQuestionAnswer(reply,true,false,meal), {answer:'모르겠어요',clarify:false});
+  const detailed = '물은 평소와 같고 밥은 반만 먹었어요.';
+  assert.deepEqual(resolveQuestionAnswer(detailed,true,false,meal), {answer:detailed,clarify:false});
+  input.answers.meal = detailed;
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+});
+
+test('한 문장에서 구토 시작과 이후의 날짜가 있는 경과를 분리한다', () => {
+  const input = confirm(intake('어제부터 토했는데 오늘 더 심해졌어요. 밥은 반만 먹었어요.'));
+  const slots = intakeQuestions(input);
+  assert.equal(input.answers['vomit-onset'], '어제');
+  assert.ok(slots.some(slot => slot.label === '오늘 구토 경과는 어떻게 달라졌나요?' && slot.answer === '심해졌어요'));
+  assert.deepEqual(remaining(input).map(slot => slot.label), ['이번에 몇 번 토했나요?']);
+  input.answers['vomit-count'] = '모르겠어요';
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const result = readPagesDraft(id);
+  assert.match(result.hpi, /오늘 구토 경과는 어떻게 달라졌나요\? 심해졌어요/u);
+});
