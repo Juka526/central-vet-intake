@@ -1465,3 +1465,33 @@ test('다른 단독 시각의 정정은 재확인하고 해당 시각의 답만 
     {label:eight.label,text:correction+' (보호자 정정)'}, {label:ten.label,text:'2회'},
   ]);
 });
+
+for (const [complaint, expected] of [
+  ['어제 두 번 토했어요. 오늘은 구토와 설사 모두 있었어요.', [
+    ['어제 몇 번 토했나요?','2회'], ['오늘 몇 번 토했나요?',''], ['오늘 설사가 몇 번 있었나요?',''],
+  ]],
+  ['어제 두 번 토했어요. 오늘은 설사도 두 번 하고 구토도 한 번 했어요.', [
+    ['어제 몇 번 토했나요?','2회'], ['오늘 설사가 몇 번 있었나요?','2회'], ['오늘 몇 번 토했나요?','1회'],
+  ]],
+  ['어제는 총 두 번 토했고 오늘은 총 세 번 토했어요.', [
+    ['어제 몇 번 토했나요?','2회'], ['오늘 몇 번 토했나요?','3회'],
+  ]],
+]) {
+  test('날짜별 필수 횟수와 Pages 초안 · '+complaint, () => {
+    const input = confirm(intake(complaint+' 밥은 평소처럼 먹었어요.'));
+    const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+    assert.deepEqual(counts.map(({label,answer,required}) => [label,answer,required]),
+      expected.map(([label,answer]) => [label,answer,true]));
+    for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+    for (const {id} of counts) {
+      const answers = {...input.answers};
+      delete answers[id];
+      assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+    }
+    const {id} = pages('/api/intakes',{method:'POST',body:input});
+    const {timeline,missing} = readPagesDraft(id);
+    assert.deepEqual(timeline.filter(item => item.label.includes('몇 번')),
+      expected.map(([label,answer]) => ({label,text:answer || '미확인 (모르겠어요)'})));
+    for (const [label,answer] of expected) assert.equal(missing.includes(label), !answer);
+  });
+}
