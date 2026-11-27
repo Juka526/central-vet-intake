@@ -1495,3 +1495,25 @@ for (const [complaint, expected] of [
     for (const [label,answer] of expected) assert.equal(missing.includes(label), !answer);
   });
 }
+
+test('같은 날짜의 나란한 횟수는 각각 증상에 연결하고 Pages에서 필수로 확인한다', () => {
+  for (const join of [' 및 ',' 그리고 ','와 ','이랑 ']) {
+    const input = confirm(intake('어제 두 번 토했어요. 오늘은 구토 1회'+join+
+      '설사 3회였어요. 둘 다 어제부터예요. 밥은 절반 먹었어요.'));
+    const counts = intakeQuestions(input).filter(slot => /^(vomit|diarrhea)-count/u.test(slot.id));
+    assert.deepEqual(counts.map(({id,period,answer}) => [id.split('-')[0],period,answer]), [
+      ['vomit','어제','2회'],['vomit','오늘','1회'],['diarrhea','오늘','3회'],
+    ], join);
+    for (const {id} of counts) {
+      const answers = {...input.answers};
+      delete answers[id];
+      assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+    }
+    input.answers[counts[1].id] = '2회';
+    const {id} = pages('/api/intakes',{method:'POST',body:input});
+    assert.deepEqual(readPagesDraft(id).timeline.filter(item => item.label.includes('몇 번')), [
+      {label:counts[0].label,text:'2회'}, {label:counts[1].label,text:'2회 (보호자 정정)'},
+      {label:counts[2].label,text:'3회'},
+    ]);
+  }
+});
