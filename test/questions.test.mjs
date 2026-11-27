@@ -1119,3 +1119,31 @@ test('식사와 음수를 이어 말하면 후보가 따로 표시되고 식사�
   const {hpi} = readPagesDraft(id);
   for (const {label,answer} of slots) assert.ok(hpi.includes(label+' '+answer));
 });
+
+test('같은 날의 축약된 시간 표현을 별도 횟수 후보로 연결한다', () => {
+  for (const particle of ['에','엔','에는','에도','도','은','']) {
+    const input = confirm(intake('어제 아침 두 번 토했고 저녁'+particle+' 세 번 했어요. 사료를 절반만 먹었어요.'));
+    const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+    assert.deepEqual(counts.map(({period,answer}) => [period,answer]),
+      [['어제 아침','2회'],['어제 저녁','3회']], particle);
+  }
+});
+
+test('명시된 시작만 말한 뒤 다른 날 반복됐다고 답하면 그날 횟수를 묻는다', () => {
+  for (const reply of ['오늘도 그랬어요','오늘에도 또 했어요','오늘 또 했어요']) {
+    const input = confirm(intake('어제부터 토했어요. '+reply+'. 사료를 절반만 먹었어요.'));
+    assert.equal(input.answers['vomit-onset'], '어제');
+    const [count] = remaining(input);
+    assert.equal(count.label, '오늘 몇 번 토했나요?');
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+    input.answers[count.id] = '모르겠어요';
+    assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  }
+});
+
+test('증상 진행 중 다른 날의 악화를 말하면 날짜와 시작을 따로 기록한다', () => {
+  const input = confirm(intake('어제부터 토하다가 오늘 심해졌어요. 사료를 절반만 먹었어요.'));
+  assert.equal(input.answers['vomit-onset'], '어제');
+  assert.ok(intakeQuestions(input).some(slot =>
+    slot.label === '오늘 구토 경과는 어떻게 달라졌나요?' && slot.answer === '심해졌어요'));
+});
