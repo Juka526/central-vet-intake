@@ -1389,3 +1389,27 @@ test('재진 병력에 식사량으로 답하면 한 번 되묻고 계속 벗어
   assert.ok(hpi.includes(slot.label + ' 미확인 (모르겠어요)'));
   assert.equal(input.answers.meal, '사료를 절반만 먹었어요');
 });
+
+test('토를 했다는 날짜를 관찰로 인정하되 부정 진술은 횟수를 만들지 않는다', () => {
+  for (const reply of ['토를 했어요','토도 했어요','구토를 했어요']) {
+    const input = confirm(intake('어제 두 번 토했어요. 오늘은 '+reply+'. 밥은 절반 먹었어요.'));
+    input.answers['vomit-onset'] = '어제';
+    const pending = remaining(input);
+    assert.deepEqual(pending.map(({label}) => label), ['오늘 몇 번 토했나요?']);
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+    input.answers[pending[0].id] = '모르겠어요';
+    assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  }
+  const negated = intake('어제 두 번 토했어요. 오늘은 토를 하지 않았어요. 밥은 절반 먹었어요.');
+  assert.ok(!intakeQuestions(negated).some(slot => slot.label === '오늘 몇 번 토했나요?'));
+});
+
+test('어느 쪽으로 달라 보였는지 모호하면 활력 답변을 다시 묻는다', () => {
+  const slot = intakeQuestions(intake(short)).find(item => item.id === 'activity');
+  for (const reply of ['평소랑 좀 달라 보였어요.','기운이 평소보다 조금 달라 보여요.']) {
+    assert.deepEqual(resolveQuestionAnswer(reply,false,false,slot), {answer:'',clarify:true});
+    assert.deepEqual(resolveQuestionAnswer(reply,true,false,slot), {answer:'모르겠어요',clarify:false});
+  }
+  assert.deepEqual(resolveQuestionAnswer('평소보다 덜 움직였어요.',false,false,slot),
+    {answer:'평소보다 덜 움직였어요.',clarify:false});
+});
