@@ -1719,3 +1719,24 @@ test('기존에 날짜 없이 저장한 설사 횟수는 검토 화면에서 읽
   });
   assert.ok(draft(input).timeline.some(item => item.label === '이번에 설사가 몇 번 있었나요?' && item.text === '3회'));
 });
+
+test('쉼표로 이어진 구토와 설사의 축약 횟수를 같은 날짜에 각각 기록한다', () => {
+  const input = confirm(intake('어제 토했어요. 오늘은 토 한 번, 설사 두 번 했어요. 밥은 평소와 같아요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(({label,answer}) => [label,answer]), [
+    ['어제 몇 번 토했나요?',''],['오늘 몇 번 토했나요?','1회'],['오늘 설사가 몇 번 있었나요?','2회'],
+  ]);
+  for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+  for (const count of counts) {
+    const answers = {...input.answers};
+    delete answers[count.id];
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  }
+  assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+});
+
+test('구토 없이 발생한 설사에는 오늘 횟수만 묻는다', () => {
+  const input = intake('어제 토했어요. 오늘은 구토 없이 설사를 했어요. 밥은 평소와 같아요.');
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(({label}) => label), ['어제 몇 번 토했나요?','오늘 설사가 몇 번 있었나요?']);
+});
