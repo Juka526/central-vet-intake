@@ -1568,6 +1568,25 @@ test('오늘 또 한 번은 직전 구토를 이어받아 오늘의 필수 횟�
   assert.ok(timeline.some(item => item.label === '구토 관찰 시점 · 오늘' && item.text === '오늘'));
 });
 
+test('오늘은 세 번이었어요를 별도 필수 횟수로 확인하고 Pages 초안에 표시한다', () => {
+  const input = confirm(intake('어제부터 토했어요. 어제는 두 번 토했고 오늘은 세 번이었어요. 밥은 평소와 같아요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts.map(({period,answer,required}) => [period,answer,required]), [
+    ['어제','2회',true], ['오늘','3회',true],
+  ]);
+  assert.deepEqual(remaining(input), []);
+  const answers = {...input.answers};
+  delete answers[counts[1].id];
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const {hpi,timeline} = readPagesDraft(id);
+  for (const {label,answer,period} of counts) {
+    assert.ok(hpi.includes(label+' '+answer));
+    assert.ok(timeline.some(item => item.label === label && item.text === answer));
+    assert.ok(timeline.some(item => item.label === '구토 관찰 시점 · '+period && item.text === period));
+  }
+});
+
 test('또 한 번은 직전 증상이 여럿이면 어느 증상의 횟수인지 추정하지 않는다', () => {
   const input = confirm(intake('어제 구토와 설사가 있었어요. 오늘 또 한 번. 밥은 절반만 먹었어요.'));
   const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
