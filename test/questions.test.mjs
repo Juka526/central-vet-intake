@@ -1548,3 +1548,43 @@ test('구토와 설사의 사료 변경은 방문당 한 번 표시하며 확인
   const incomplete = confirm(intake(dated));
   assert.ok(pages('/api/intakes',{method:'POST',body:incomplete}).id);
 });
+
+test('오늘 또 한 번은 직전 구토를 이어받아 오늘의 필수 횟수로 접수한다', () => {
+  const input = confirm(intake('어제 한 번 토했어요. 오늘 또 한 번. 밥은 평소보다 적게 먹었어요.'));
+  input.answers['vomit-onset'] = '어제';
+  const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts.map(({period,answer,required}) => [period,answer,required]), [
+    ['어제','1회',true], ['오늘','1회',true],
+  ]);
+  assert.deepEqual(remaining(input), []);
+  const answers = {...input.answers};
+  delete answers[counts[1].id];
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const {timeline} = readPagesDraft(id);
+  assert.deepEqual(timeline.filter(item => item.label.includes('몇 번')), [
+    {label:counts[0].label,text:'1회'}, {label:counts[1].label,text:'1회'},
+  ]);
+  assert.ok(timeline.some(item => item.label === '구토 관찰 시점 · 오늘' && item.text === '오늘'));
+});
+
+test('또 한 번은 직전 증상이 여럿이면 어느 증상의 횟수인지 추정하지 않는다', () => {
+  const input = confirm(intake('어제 구토와 설사가 있었어요. 오늘 또 한 번. 밥은 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(({period,answer}) => [period,answer]), [['어제',''],['어제','']]);
+});
+
+test('평소와 같다는 식사량을 후보에서 확인하면 다시 묻지 않는다', () => {
+  const input = confirm(intake('어제부터 두 번 토했어요. 밥은 평소와 같아요.'));
+  assert.equal(input.answers.meal, '밥은 평소와 같아요');
+  assert.deepEqual(remaining(input), []);
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.match(readPagesDraft(id).hpi, /밥은 평소와 비교해 얼마나 먹었나요\? 밥은 평소와 같아요/u);
+  for (const id of ['water','activity','stool']) {
+    assert.equal(intakeQuestions(input).find(slot => slot.id === id).status, 'pending');
+  }
+  for (const clause of ['밥은 평소와 같아요?', '밥은 평소와 같지 않아요.']) {
+    assert.equal(intakeQuestions(intake('어제부터 두 번 토했어요. '+clause))
+      .find(slot => slot.id === 'meal').candidate, null);
+  }
+});

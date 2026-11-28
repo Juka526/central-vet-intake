@@ -371,6 +371,27 @@ async function run() {
 
     await page.reload();
     await startLeo();
+    await page.locator('#complaint').fill('어제 한 번 토했어요. 오늘 또 한 번. 밥은 평소와 같아요.');
+    await action('next');
+    for (const day of ['어제','오늘']) {
+      assert.equal(await page.getByLabel(`${day} 몇 번 토했나요?`, {exact:true}).inputValue(), '1회');
+    }
+    assert.equal(await page.locator('[data-candidate="meal"]').inputValue(), '밥은 평소와 같아요');
+    await action('confirm-candidates');
+    assert.equal(await page.locator('[data-current]').getAttribute('id'), 'q-vomit-onset');
+    await page.locator('[data-current]').fill('어제');
+    await action('save-answer');
+    assert.equal(await page.locator('[data-current]').count(), 0);
+    await action('next');
+    await submit();
+    await openReview();
+    const repeatedVomitHpi = await page.locator('#review-hpi').inputValue();
+    assert.match(repeatedVomitHpi, /구토 관찰 시점 · 오늘 오늘/);
+    assert.match(repeatedVomitHpi, /오늘 몇 번 토했나요\? 1회/);
+    assert.match(repeatedVomitHpi, /밥은 평소와 비교해 얼마나 먹었나요\? 밥은 평소와 같아요/);
+
+    await page.reload();
+    await startLeo();
     await page.locator('#complaint').fill('어제부터 토했어요.');
     await action('next');
     await action('confirm-candidates');
