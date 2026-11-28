@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import { test } from 'node:test';
 import { verifyCloudAudio } from '../scripts/verify-cloud-audio.mjs';
 import { verifyCloudVisits } from '../scripts/verify-cloud-visits.mjs';
+import { QUESTION_VERSION, intakeQuestions } from '../lib/engine.mjs';
 import { fixture } from '../test/fixture.mjs';
 import { makeServer } from './server.mjs';
 import { createVisitsHandler } from './visits.mjs';
@@ -535,4 +536,30 @@ test('Cloud audio consent, private playback, exact expiry and idempotent partial
   publicBucket = true;
   await assert.rejects(verifyCloudAudio(candidate), /Anonymous object lookup returned 200/);
   assert.equal(objects.size, 0);
+});
+
+test('cloud intake preserves adaptive observations and fingerprints guardian corrections on retry', async () => {
+  const fake = fakeFirestore();
+  const call = api(firestoreVisits({ project, token: async () => null, request: fake.request }), Date.now);
+  const subject = 'synthetic-adaptive';
+  const id = randomUUID();
+  const body = {...fixture({complaint:'어제 처음 토했어요. 오늘 아침 두 번 토했어요. 오늘 저녁 한 번 토했어요.'}),
+    questionVersion:QUESTION_VERSION, categories:['digestive'], symptomSelections:['vomit','diarrhea'],
+    corrections:['meal'], answers:{}};
+  for (const slot of intakeQuestions(body)) {
+    if (slot.candidate) body.answers[slot.id] = slot.candidate.value;
+    else if (slot.required) body.answers[slot.id] = '모르겠어요';
+  }
+  body.answers.meal = '절반';
+  const submit = data => call('/api/intakes', {method:'POST', subject, headers:{'idempotency-key':id}, body:data});
+  const first = await submit(body);
+  assert.equal(first.status, 201);
+  const record = (await call('/api/intakes/'+id, {subject, role:'vet'})).body;
+  assert.deepEqual(record.symptomSelections, body.symptomSelections);
+  assert.match(record.draft.hpi, /오늘 아침 몇 번 토했나요\? 2회/);
+  assert.match(record.draft.soapS, /오늘 저녁 몇 번 토했나요\? 1회/);
+  assert.match(record.draft.hpi, /절반 \(보호자 정정\)/);
+  assert.match(record.draft.hpi, /설사가 몇 번 있었나요\? 미확인/);
+  assert.deepEqual((await submit(body)).body, first.body);
+  assert.equal((await submit({...body, corrections:[]})).status, 409);
 });

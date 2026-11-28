@@ -1,4 +1,4 @@
-import { PETS, CATEGORIES, RISKS, CONSENT_VERSION, SAFETY, questions, assess, extractCandidates } from '/lib/engine.mjs';
+import { PETS, CATEGORIES, RISKS, CONSENT_VERSION, SAFETY, QUESTION_VERSION, SELECTABLE_SYMPTOMS, intakeQuestions, displayAnswer, clarification, resolveQuestionAnswer, suggestedCategory, assess } from '/lib/engine.mjs';
 const pages = document.documentElement.hasAttribute('data-static-demo');
 const cloud = pages && new URLSearchParams(location.search).get('cloud') === '1';
 let cloudToken = '', cloudScope = '', submission, cloudActionPending = false;
@@ -9,7 +9,7 @@ const $=s=>document.querySelector(s);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const icons={paw:'<circle cx="8" cy="7" r="2"/><circle cx="16" cy="7" r="2"/><circle cx="4.5" cy="12" r="1.6"/><circle cx="19.5" cy="12" r="1.6"/><path d="M7 18c0-6 10-6 10 0 0 4-3 1-5 1s-5 3-5-1Z"/>',mic:'<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/>',check:'<path d="m5 12 4 4L19 6"/>',shield:'<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/>',file:'<path d="M14 3H5v18h14V8l-5-5Z M14 3v6h5M8 13h8M8 17h6"/>',clock:'<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>',alert:'<path d="m12 3 10 18H2L12 3Z M12 9v5M12 17v1"/>',copy:'<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',heart:'<path d="M20 5c-3-3-6-1-8 1-2-2-5-4-8-1-4 5 3 11 8 15 5-4 12-10 8-15Z"/>',home:'<path d="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7"/>',logout:'<path d="M10 4H4v16h6M10 12h11m-4-4 4 4-4 4"/>'};
 const icon=(name,cls='')=>`<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]||icons.file}</svg>`;
-const blank=()=>({petId:PETS[0].id,visitType:'first',category:'digestive',complaint:'',answers:{},risks:{},consents:{privacy:false,voice:false,retainAudio:false,version:CONSENT_VERSION},synthetic:false});
+const blank=()=>({petId:PETS[0].id,visitType:'first',category:'digestive',categories:[],questionVersion:QUESTION_VERSION,corrections:[],symptomSelections:[],complaint:'',answers:{},risks:{},consents:{privacy:false,voice:false,retainAudio:false,version:CONSENT_VERSION},synthetic:false});
 let session,view='guardian',step=0,form=blank(),receipt=null,items=[],selected=null,filter='all',query='',auditOpen=false,activeRecordTab='hpi',busy=false;
 let guardianChat = null;
 let playbackURL=null, playbackTimer;
@@ -178,21 +178,54 @@ function header(){return `<header class="topbar${cloud?' cloud-topbar':''}"><a h
 function foot(){return `<footer><span>전주 센트럴 동물메디컬센터 <span class="muted">· 내부 시험용 MVP</span></span><span>음성 원본 기본 미보관 · 외부 AI 전송 없음</span></footer>`;}
 function contact(){return `<div class="contact-callout">${icon('alert')}<div><b>긴급한 상태라면 문진을 기다리지 마세요.</b><p>${session?.phone?`병원에 즉시 연락하세요. <a href="tel:${esc(session.phone.replace(/[^+\d]/g,''))}">${esc(session.phone)}</a>`:'원내에서는 직원에게 즉시 알려 주세요. 원외에서는 병원 또는 가까운 응급 동물병원에 즉시 연락하세요.'}</p>${!session?.phone?'<small>시험 환경: 병원 대표번호 미설정</small>':''}</div></div>`;}
 function sidebar(){return `<aside class="intake-side"><div class="eyebrow">진료 전, 미리 들려주세요</div><h2>우리 아이 이야기를<br>충분히 듣는 시간.</h2><p>보호자의 관찰이 더 나은<br>진료의 시작이 됩니다.</p><ol class="steps">${['아이와 보호자 확인','증상 들려주기','조금 더 알아보기','확인하고 제출'].map((label,i)=>`<li class="${step===i?'current':step>i?'done':''}"><span>${step>i?icon('check'):i+1}</span><div>${label}<small>${['가상 환자 · 동의','음성 또는 텍스트','상태에 맞는 후속 질문','위험 징후 · 최종 확인'][i]}</small></div></li>`).join('')}</ol><div class="side-note">${icon('shield')}<p>작성한 문진은 수의사가<br>확인하고 승인합니다.</p></div></aside>`;}
-function petCard(){return `<aside class="context-side"><div class="pet-preview"><span class="eyebrow">오늘의 문진</span><div class="pet-avatar">${icon('paw')}</div><h3>${esc(pet().name)} <span>가상 환자</span></h3><p>${esc(pet().breed)} · ${esc(pet().age)}<br>${esc(pet().sex)}</p><div class="divider"></div><dl><dt>방문 유형</dt><dd>${form.visitType==='return'?'재진':'초진'}</dd><dt>작성 예상</dt><dd>약 3–5분</dd><dt>문진 방식</dt><dd>보호자 직접 작성</dd></dl></div><div class="quiet-card">${icon('heart')}<b>보이는 그대로 알려 주세요.</b><p>정확한 의학 용어를 몰라도 괜찮아요. 언제, 어떤 모습이었는지 이야기해 주세요.</p></div><button class="text-btn contact-button" data-action="contact">${icon('alert')}지금 많이 아파 보여요</button></aside>`;}
+function petCard(){return `<aside class="context-side"><div class="pet-preview"><span class="eyebrow">오늘의 문진</span><div class="pet-avatar">${icon('paw')}</div><h3>${esc(pet().name)} <span>가상 환자</span></h3><p>${esc(pet().breed)} · ${esc(pet().age)}<br>${esc(pet().sex)}</p><div class="divider"></div><dl><dt>방문 유형</dt><dd>${form.visitType==='return'?'재진':'초진'}</dd><dt>작성 예상</dt><dd>답변에 따라 달라요</dd><dt>문진 방식</dt><dd>보호자 직접 작성</dd></dl></div><div class="quiet-card">${icon('heart')}<b>보이는 그대로 알려 주세요.</b><p>정확한 의학 용어를 몰라도 괜찮아요. 언제, 어떤 모습이었는지 이야기해 주세요.</p></div><button class="text-btn contact-button" data-action="contact">${icon('alert')}지금 많이 아파 보여요</button></aside>`;}
 function consent(){return `<div class="section-heading"><span class="eyebrow">시작하기</span><h1 tabindex="-1">안녕하세요, 보호자님.</h1><p>내원 전, 아이의 상태를 편하게 알려 주세요.</p></div><div class="hospital-line">${icon('home')}<div><strong>전주 센트럴 동물메디컬센터</strong><span>내원 전 보호자 문진 · 내부 시험</span></div><span class="pill green">가상 병원 환경</span></div><h3 class="field-title">문진할 아이를 선택해 주세요</h3><div class="pet-options">${PETS.map(p=>`<label class="pet-option ${form.petId===p.id?'selected':''}"><input type="radio" name="petId" value="${p.id}" ${form.petId===p.id?'checked':''}><span class="small-avatar">${icon('paw')}</span><strong>${p.name}</strong><span>${p.species} · ${p.age}</span></label>`).join('')}</div><div class="split"><div><label class="field-title" for="visitType">이번 방문은 어떤 진료인가요?</label><select id="visitType" name="visitType"><option value="first" ${form.visitType==='first'?'selected':''}>초진 · 새로운 증상 상담</option><option value="return" ${form.visitType==='return'?'selected':''}>재진 · 이전 진료 이후 경과</option></select></div><div class="identity-note">${icon('file')}<p>${esc(pet().owner)}<br><small>실제 이름·연락처를 입력하지 마세요.</small></p></div></div>${form.visitType==='return'?`<div class="info-box"><b>이전 기록 연결은 준비 중입니다.</b><p>${esc(pet().history)}</p><small>실제 인투벳 GE 연동이 아닙니다. 현재 복용약과 병력을 다시 알려 주세요.</small></div>`:''}<h3 class="field-title space">안전한 시험을 위해 확인해 주세요</h3><div class="consents"><label class="checkbox"><input type="checkbox" name="synthetic" ${form.synthetic?'checked':''}><span><b>[필수] 가상 정보만으로 시험합니다.</b><small>본인·가족의 개인정보, 실제 환자 정보를 입력하지 않습니다.</small></span></label><label class="checkbox"><input type="checkbox" name="privacy" ${form.consents.privacy?'checked':''}><span><b>[필수] 문진 정보 처리에 동의합니다.</b><small>가상 환자 식별·증상·답변을 접수와 수의사 검토에 사용합니다. ${cloud?'클라우드에 최대 24시간 보관하며 직접 삭제할 수 있습니다.':demo?'문진은 이 탭에만 최대 24시간 보관됩니다. 새로고침하거나 탭을 닫으면 삭제됩니다.':'이 실행 서버의 메모리에 최대 24시간 보관하며, 직접 삭제하거나 서버를 종료하면 사라집니다.'} 거부하면 문진을 제출할 수 없습니다.</small></span></label><label class="checkbox"><input type="checkbox" name="voice" ${form.consents.voice?'checked':''}><span><b>[선택] 음성을 글자로 변환하는 데 동의합니다.</b><small>기기 내 한국어 인식을 지원할 때만 작동합니다. 외부 음성 서비스로 전환하지 않으며, 미지원 시 텍스트를 이용합니다. 인식된 글은 문진 정보로 제출됩니다. 거부해도 텍스트 문진이 가능합니다.</small></span></label><label class="checkbox"><input type="checkbox" name="retainAudio" ${form.consents.retainAudio?'checked':''} ${!form.consents.voice?'disabled':''}><span><b>[선택] 시험 음성 원본을 최대 1시간 보관합니다.</b><small>수의사가 인식 오류를 대조할 때만 사용합니다. 최대 60초·1MB이며 자동 삭제 또는 즉시 삭제할 수 있습니다. 동의하지 않으면 이 앱은 원본을 녹음·저장하지 않습니다. 녹음한 뒤에도 증상 입력 화면에서 원본을 버릴 수 있습니다.</small></span></label></div><div class="inline-note">${icon('shield')}진단·처방을 제공하지 않으며 수의사의 확인이 필요합니다.</div>`;}
-function complaint(){return `<div class="section-heading"><span class="eyebrow">보호자 이야기</span><h1 tabindex="-1">${esc(pet().name)}는 어디가 불편한가요?</h1><p>가장 걱정되는 증상을 선택하고, 관찰한 내용을 들려주세요.</p></div><label class="field-title" for="category">가장 주된 증상</label><div class="chips">${CATEGORIES.map(c=>`<button class="chip ${form.category===c.id?'selected':''}" data-category="${c.id}" aria-pressed="${form.category===c.id}">${c.label}</button>`).join('')}</div><div class="voice-card"><div class="voice-orb ${listening?'listening':''}">${icon('mic')}</div><h3>${listening?'듣고 있어요. 편하게 말씀해 주세요.':'말로 들려주셔도 좋아요'}</h3><p>“어제 저녁부터 두 번 토했어요.<br>밥도 평소보다 적게 먹고요.”</p><button class="${listening?'danger':'primary'}" data-action="voice">${icon(listening?'check':'mic')}${listening?'음성 입력 마치기':'음성으로 이야기하기'}</button><small>${form.consents.voice?'기기 내 인식 지원 시 가능 · 최대 60초':'음성 처리 동의 후 사용 가능 · 텍스트 입력은 바로 가능'}</small><div id="voice-message" role="status" aria-live="polite"></div></div><div class="label-row"><label class="field-title" for="complaint">직접 쓰거나, 인식된 내용을 고쳐 주세요</label><button class="text-btn" data-action="sample-complaint">가상 예시 넣기</button></div><textarea id="complaint" name="complaint" rows="5" maxlength="3000" placeholder="언제부터, 어떤 증상이, 얼마나 자주 나타났나요?">${esc(form.complaint)}</textarea><div class="input-meta"><span>이름·전화번호 등 개인정보는 적지 마세요.</span><span id="char-count">${form.complaint.length}/3,000</span></div>${audioBlob?`<p class="inline-note">선택 동의한 시험 음성이 메모리에 준비되었습니다. ${demo?'이 탭에서만 사용합니다.':'제출 전까지 서버로 전송하지 않습니다.'} <button class="text-btn" data-action="discard-audio">녹음만 버리기</button></p>`:''}<div id="live-risk">${liveRisk()}</div>`;}
-function liveRisk(){const flags=assess(form.complaint,form.answers,form.risks);return flags.length?`<div class="risk-banner" role="alert">${icon('alert')}<div><b>확인이 필요한 위험 징후 표현이 있어요.</b><p>${flags.map(f=>esc(f.label)).join(' · ')}</p><small>키워드 후보에는 과거·부정 표현이 포함될 수 있습니다. 현재 상태가 이와 같거나 불확실하면 병원에 즉시 연락하세요.</small><button class="text-btn" data-action="contact">병원 연락 안내 보기</button></div></div>`:'';}
-function candidatePreview(complaint) {
-  const candidates = extractCandidates(complaint);
-  const labels = { onset: '시작 시점', vomitCount: '구토 횟수', mealChange: '식사 변화' };
-  return `<section class="info-box"><h2>증상 설명에서 찾은 답변 후보</h2><dl>${Object.entries(labels).map(([field, label]) => {
-    const { value, evidence } = candidates[field];
-    const display = value === null ? '미확인' : field === 'vomitCount' ? `${value}회` : value;
-    return `<dt><strong>${label}</strong></dt><dd>${esc(display)}${evidence ? ` · 원문 <q>${esc(evidence)}</q>` : ''}</dd>`;
-  }).join('')}</dl></section>`;
+function symptomOptions(){
+  const options=SELECTABLE_SYMPTOMS.filter(item=>form.categories.includes(item.category));
+  if(!options.length)return '';
+  return `<p class="field-title">해당하는 하위 증상이 있으면 선택해 주세요.</p><div class="chips">${options.map(item=>{
+    const active=form.symptomSelections.includes(item.id);
+    return `<button class="chip ${active?'selected':''}" data-symptom="${item.id}" aria-pressed="${active}">${esc(item.label)}</button>`;
+  }).join('')}</div>`;
 }
-function followup(){const qs=questions(form.category,form.complaint,form.visitType,form.answers);return `<div class="section-heading"><span class="eyebrow">맞춤 후속 질문 · ${qs.length}개</span><h1 tabindex="-1">조금만 더 알려 주세요.</h1><p>앞서 알려주신 증상을 바탕으로 필요한 내용을 확인할게요.<br>모르는 항목은 “모름”, 해당하지 않으면 “없음”으로 적어 주세요.</p></div><div class="quote-box"><span>증상 설명</span><p>${esc(form.complaint)}</p><button class="text-btn" data-action="back">증상 설명 수정</button></div>${candidatePreview(form.complaint)}${Object.keys(form.answers).length ? '<p id="answer-recovery" class="info-box">이전에 작성한 답변을 불러왔어요. 증상 설명을 고쳤다면 관련 답변도 수정해 주세요.</p>' : ''}<div class="label-row"><p class="muted">${CATEGORIES.find(c=>c.id===form.category).label} 중심 문진</p><button class="text-btn" data-action="sample-answers">가상 답변 채우기</button></div>${qs.map((q,i)=>`<div class="question"><label for="q-${q.id}"><span class="question-no">${i+1}</span>${esc(q.label)}</label><small id="help-${q.id}">${esc(q.help)}</small><textarea id="q-${q.id}" aria-describedby="help-${q.id}" data-answer="${q.id}" rows="2" maxlength="1200" placeholder="관찰한 내용 또는 모름">${esc(form.answers[q.id]||'')}</textarea></div>`).join('')}<div id="live-risk">${liveRisk()}</div>`;}
-function confirmation(){return `<div class="section-heading"><span class="eyebrow">마지막 확인</span><h1 tabindex="-1">위험 징후를 확인해 주세요.</h1><p>현재 모습과 가장 가까운 답을 골라 주세요.<br>“모르겠어요”도 의료진이 확인할 중요한 정보입니다.</p></div>${contact()}<div class="risk-list">${RISKS.map(r=>`<fieldset><legend>${esc(r.label)}</legend><div class="risk-options">${[['yes','예'],['no','아니요'],['unsure','모르겠어요']].map(([v,l])=>`<label class="risk-option ${form.risks[r.id]===v?'chosen '+v:''}"><input type="radio" name="risk-${r.id}" value="${v}" ${form.risks[r.id]===v?'checked':''}>${l}</label>`).join('')}</div></fieldset>`).join('')}</div><div id="live-risk">${liveRisk()}</div><details class="review-details"><summary>제출할 문진 내용 확인</summary><dl><dt>환자 · 방문</dt><dd>${esc(pet().name)} · ${form.visitType==='return'?'재진':'초진'} · 가상 정보</dd><dt>주호소</dt><dd>${esc(form.complaint)}</dd>${questions(form.category,form.complaint,form.visitType,form.answers).map(q=>`<dt>${esc(q.label)}</dt><dd>${esc(form.answers[q.id])}</dd>`).join('')}</dl><p>음성 원본 보관: ${form.consents.retainAudio?'선택 동의 · 녹음이 있는 경우 제출 후 최대 1시간':'동의 안 함 · 원본 녹음 없음'}</p></details><label class="checkbox final-check"><input type="checkbox" id="final-confirm"><span>입력 내용을 확인했습니다. 이 문진은 응급 연락이나 진료를 대체하지 않음을 이해합니다.</span></label>`;}
+function complaint(){return `<div class="section-heading"><span class="eyebrow">보호자 이야기</span><h1 tabindex="-1">${esc(pet().name)}는 어디가 불편한가요?</h1><p>해당하는 증상을 모두 선택하고, 관찰한 내용을 들려주세요.</p></div><label class="field-title" for="category">해당하는 증상</label><div class="chips">${CATEGORIES.map(c=>`<button class="chip ${form.categories.includes(c.id)?'selected':''}" data-category="${c.id}" aria-pressed="${form.categories.includes(c.id)}">${c.label}</button>`).join('')}</div>${symptomOptions()}<div class="voice-card"><div class="voice-orb ${listening?'listening':''}">${icon('mic')}</div><h3>${listening?'듣고 있어요. 편하게 말씀해 주세요.':'말로 들려주셔도 좋아요'}</h3><p>“어제 저녁부터 두 번 토했어요.<br>밥도 평소보다 적게 먹고요.”</p><button class="${listening?'danger':'primary'}" data-action="voice">${icon(listening?'check':'mic')}${listening?'음성 입력 마치기':'음성으로 이야기하기'}</button><small>${form.consents.voice?'기기 내 인식 지원 시 가능 · 최대 60초':'음성 처리 동의 후 사용 가능 · 텍스트 입력은 바로 가능'}</small><div id="voice-message" role="status" aria-live="polite"></div></div><div class="label-row"><label class="field-title" for="complaint">직접 쓰거나, 인식된 내용을 고쳐 주세요</label><button class="text-btn" data-action="sample-complaint">가상 예시 넣기</button></div><textarea id="complaint" name="complaint" rows="5" maxlength="3000" placeholder="언제부터, 어떤 증상이, 얼마나 자주 나타났나요?">${esc(form.complaint)}</textarea><div class="input-meta"><span>이름·전화번호 등 개인정보는 적지 마세요.</span><span id="char-count">${form.complaint.length}/3,000</span></div>${audioBlob?`<p class="inline-note">선택 동의한 시험 음성이 메모리에 준비되었습니다. ${demo?'이 탭에서만 사용합니다.':'제출 전까지 서버로 전송하지 않습니다.'} <button class="text-btn" data-action="discard-audio">녹음만 버리기</button></p>`:''}<div id="live-risk">${liveRisk()}</div>`;}
+function liveRisk(answers=form.answers){const flags=assess(form.complaint,answers,form.risks);return flags.length?`<div class="risk-banner" role="alert">${icon('alert')}<div><b>확인이 필요한 위험 징후 표현이 있어요.</b><p>${flags.map(f=>esc(f.label)).join(' · ')}</p><small>키워드 후보에는 과거·부정 표현이 포함될 수 있습니다. 현재 상태가 이와 같거나 불확실하면 병원에 즉시 연락하세요.</small><button class="text-btn" data-action="contact">병원 연락 안내 보기</button></div></div>`:'';}
+function followup() {
+  const slots = intakeQuestions(form);
+  const needsClarification = slot => !slot.answer && form.clarifying?.includes(slot.id);
+  const requiredClarification = slots.find(slot => slot.required && needsClarification(slot));
+  const candidates = requiredClarification ? [] : slots.filter(slot =>
+    !slot.answer && slot.candidate && !needsClarification(slot) && !form.skippedCandidates?.includes(slot.id));
+  const hasRequiredCandidates = candidates.some(slot => slot.required);
+  const pending = slots.filter(slot => !slot.answer && (!slot.required || !slot.candidate));
+  const current = requiredClarification ?? pending.find(slot => slot.required)
+    ?? slots.find(needsClarification) ?? pending.find(slot => slot.id === form.optionalQuestion);
+  const clarifying = current && needsClarification(current);
+  const optional = pending.filter(slot => !slot.required && !candidates.includes(slot));
+  const answered = slots.filter(slot => slot.answer);
+  return `<div class="section-heading"><h1 tabindex="-1">조금만 더 알려 주세요.</h1></div>
+    <div class="quote-box"><span>증상 설명</span><p>${esc(form.complaint)}</p><button class="text-btn" data-action="back">증상 설명 수정</button></div>
+    ${candidates.length ? `<section class="info-box"><h2>증상 설명에서 찾은 답변 후보</h2>
+      <p>틀린 값만 고친 다음 한꺼번에 확인해 주세요. 선택 항목은 비워 두면 건너뜁니다.</p>
+      ${candidates.map(slot => `<div class="question"><label for="candidate-${slot.id}">${esc(slot.label)}${slot.required ? '' : ' <small>(선택)</small>'}</label>
+        <small>원문 <q>${esc(slot.candidate.evidence)}</q></small>
+        <input id="candidate-${slot.id}" data-candidate="${slot.id}" maxlength="1200" value="${esc(slot.candidate.value)}"></div>`).join('')}
+      <button class="secondary" data-action="confirm-candidates">후보 값 확인</button></section>` : ''}
+    ${hasRequiredCandidates ? '' : current ? `<div class="question"><label for="q-${current.id}">${esc(current.label)}</label>
+        <small>${current.candidate && !clarifying ? `원문 <q>${esc(current.candidate.evidence)}</q>` : clarifying ? clarification(current) : '모르면 “모르겠어요”, 해당하지 않으면 “없어요”로 답해 주세요.'}</small>
+        <textarea id="q-${current.id}" data-current="${current.id}" rows="2" maxlength="1200">${clarifying ? '' : esc(current.candidate?.value ?? '')}</textarea>
+        <div class="button-row"><button class="secondary" data-action="save-answer">답변 확인</button>
+        <button class="text-btn" data-action="unknown-answer">모르겠어요</button></div></div>` : '<p>필수 질문을 확인했어요. 위험 징후 확인으로 넘어갈 수 있어요.</p>'}
+    ${answered.length ? `<details><summary>확인한 답변 수정</summary>
+      ${answered.map(slot => `<div class="question"><label for="edit-${slot.id}">${esc(slot.label)}</label>
+        <input id="edit-${slot.id}" data-edit="${slot.id}" maxlength="1200" value="${esc(slot.answer)}"></div>`).join('')}
+      <button class="secondary" data-action="save-edits">수정 확인</button></details>` : ''}
+    ${!hasRequiredCandidates && !current && optional.length ? `<details><summary>선택 질문에 추가로 답하기</summary><p>아는 항목만 적어 주세요.</p>
+      ${optional.map(slot => `<button class="text-btn" data-optional="${slot.id}">${esc(slot.label)}</button>`).join('')}
+      </details>` : ''}
+    <button class="text-btn" data-action="sample-answers">가상 답변 채우기</button><div id="live-risk">${liveRisk()}</div>`;
+}
+function confirmation(){return `<div class="section-heading"><span class="eyebrow">마지막 확인</span><h1 tabindex="-1">위험 징후를 확인해 주세요.</h1><p>현재 모습과 가장 가까운 답을 골라 주세요.<br>“모르겠어요”도 의료진이 확인할 중요한 정보입니다.</p></div>${contact()}<div class="risk-list">${RISKS.map(r=>`<fieldset><legend>${esc(r.label)}</legend><div class="risk-options">${[['yes','예'],['no','아니요'],['unsure','모르겠어요']].map(([v,l])=>`<label class="risk-option ${form.risks[r.id]===v?'chosen '+v:''}"><input type="radio" name="risk-${r.id}" value="${v}" ${form.risks[r.id]===v?'checked':''}>${l}</label>`).join('')}</div></fieldset>`).join('')}</div><div id="live-risk">${liveRisk()}</div><details class="review-details"><summary>제출할 문진 내용 확인</summary><dl><dt>환자 · 방문</dt><dd>${esc(pet().name)} · ${form.visitType==='return'?'재진':'초진'} · 가상 정보</dd><dt>주호소</dt><dd>${esc(form.complaint)}</dd>${intakeQuestions(form).map(q=>`<dt>${esc(q.label)}</dt><dd>${esc(displayAnswer(q))}</dd>`).join('')}</dl><p>음성 원본 보관: ${form.consents.retainAudio?'선택 동의 · 녹음이 있는 경우 제출 후 최대 1시간':'동의 안 함 · 원본 녹음 없음'}</p></details><label class="checkbox final-check"><input type="checkbox" id="final-confirm"><span>입력 내용을 확인했습니다. 이 문진은 응급 연락이나 진료를 대체하지 않음을 이해합니다.</span></label>`;}
 function receiptView(){return `<main class="receipt-wrap"><section class="receipt card"><span class="success-orb">${icon('check')}</span><span class="eyebrow">문진 제출 완료</span><h1 tabindex="-1">${esc(pet().name)}의 이야기를 전달했어요.</h1><p>수의사가 원문과 문진 초안을 검토합니다.<br>${cloud?'접수 당시에는 <b>검토 대기</b> 상태입니다. 검토 결과는 의료진 공간에서 확인할 수 있습니다.':'지금은 <b>검토 대기</b> 상태입니다. 자동 승인되지 않습니다.'}</p><div class="receipt-id">접수 번호 <b>${esc(receipt.id.slice(0,8).toUpperCase())}</b><small>가상 정보 · ${date(receipt.expiresAt)}까지 보관${cloud?'':demo?' (새로고침·탭 닫기 시 삭제)':' (서버 종료 시 즉시 소멸)'}</small></div>${receipt.flags.length?contact():`<div class="info-box">위험 징후가 체크되지 않았어도 응급 상태가 배제된 것은 아닙니다.<br>상태가 나빠지거나 걱정되면 즉시 병원에 연락해 주세요.</div>`}<div class="button-row"><button class="primary" data-action="new">새 문진 시작 · 화면 비우기</button><button class="secondary" data-action="staff">의료진 검토 시험</button></div><div class="receipt-controls">${chatButton(receipt.id,'접수 담당자와 대화')}<button class="text-btn" data-action="delete-own">제출 자료 삭제</button>${receipt.audioExpiresAt?`<button class="text-btn" data-action="delete-own-audio">${receipt.audioDeletionPending?'음성 삭제 다시 시도':'음성 원본만 삭제'}</button>`:''}</div><p class="muted small">${esc(SAFETY)}</p></section></main>`;}
 function showSubmissionConflict() {
   const notice = $('#submission-conflict');
@@ -208,7 +241,7 @@ function table(){const filtered=items.filter(x=>(filter==='all'||filter==='risk'
 function clinician(){if(session.role==='guardian')return login();return `<main class="staff-main"><div class="staff-title"><div><span class="eyebrow">CLINICAL WORKSPACE</span><h1 tabindex="-1">문진 접수함</h1><p>보호자의 이야기를 먼저 읽고, 진료를 준비하세요.</p></div><div class="staff-title-actions"><span class="pill green">${session.role==='vet'?'수의사':'접수 담당자'} · 시험 세션</span><button class="secondary" data-action="refresh">새로고침</button></div></div>${metrics()}<div class="staff-notice">${icon('shield')}<span>초안은 반드시 원문과 대조하세요. <b>승인 전에는 HPI·SOAP S 복사가 잠겨 있습니다.</b> 위험 후보는 자동 진단이나 응급도 판정이 아닙니다.</span></div><section class="card inbox"><div class="inbox-tools"><div class="tabs">${[['all','전체'],['pending','검토 대기'],['held','보류'],['approved','승인'],['risk','위험 후보']].map(([v,l])=>`<button data-filter="${v}" class="${filter===v?'active':''}">${l}</button>`).join('')}</div><input type="search" id="search" value="${esc(query)}" placeholder="가상 환자명 · 접수번호 검색" aria-label="접수 검색"></div><div id="table-container">${table()}</div></section>${selected?reviewPanel():''}<div class="staff-bottom"><span>인투벳 GE · ${esc(session.emr?.notice||'공식 연동 미확정')} · 현재 복사 방식</span>${session.role==='vet'&&!cloud?'<button class="text-btn" data-action="audit">감사로그 보기</button>':''}</div>${auditOpen?'<section class="card audit"><h2>감사로그</h2><p>원문·음성·접근 코드를 기록하지 않습니다. 최대 24시간 보관합니다.</p><div id="audit-content"></div></section>':''}</main>`;}
 function reviewPanel(){const r=selected;
   if (r.deletionPending) return '<section class="card review-panel" id="review-panel"><p>문진 접근을 차단했습니다. 음성 원본 삭제를 다시 시도해 주세요.</p><button class="secondary" data-action="delete-record">음성 삭제 다시 시도</button></section>';
-  return `<section class="card review-panel" id="review-panel"><div class="review-header"><div><span class="eyebrow">수의사 검토</span><h2 tabindex="-1">${esc(r.pet.name)} <span class="status ${r.status}">${statusLabel(r.status)}</span></h2><p>${r.id.slice(0,8).toUpperCase()} · ${date(r.createdAt)} · 문서 버전 ${r.version}</p></div><div class="button-row review-actions">${cloud?`<button class="secondary compact" data-open="${esc(r.id)}">최신 기록 다시 열기</button>`:''}<button class="secondary compact" data-action="close-review">검토창 닫기</button></div></div>${r.draft.flags.length?`<div class="risk-banner">${icon('alert')}<div><b>위험 후보 ${r.draft.flags.length}건 · 직접 확인이 필요합니다.</b><ul>${r.draft.flags.map(f=>`<li>${esc(f.label)} <small>· ${esc(f.source)}</small></li>`).join('')}</ul><small>과거·부정 표현을 자동으로 배제하지 않습니다. 현재 상태와 연락 필요성을 직접 판단하세요.</small></div></div>`:'<p class="info-box">위험 징후가 체크되지 않았어도 응급 상태 배제를 뜻하지 않습니다.</p>'}<div class="clinical-strip"><div><strong>문제목록 · 보호자 표현</strong><p>${esc(r.draft.problems.join('\n'))}</p></div><div><strong>시간 흐름</strong>${r.draft.timeline.map(t=>`<p>${t.label}: ${esc(t.text)}</p>`).join('')}</div><div><strong>약물 · 기왕력</strong><p>복용약: ${esc(r.draft.meds)}<br>병력: ${esc(r.draft.history)}</p></div></div><div class="parallel"><article class="source-pane"><div class="pane-title"><h3>보호자 원문</h3><span class="pill">수정 불가</span></div><p class="source-label">주호소</p><p class="source-text">${esc(r.complaint)}</p>${questions(r.category,r.complaint,r.visitType,r.answers).map(q=>`<div class="source-answer"><b>${esc(q.label)}</b><p>${esc(r.answers[q.id]||'미확인')}</p></div>`).join('')}<details><summary>위험 체크 · 동의 내역 확인</summary><ul>${RISKS.map(risk=>`<li>${esc(risk.label)}: ${esc({yes:'예',no:'아니요',unsure:'모름'}[r.risks[risk.id]])}</li>`).join('')}</ul><p>동의 ${esc(r.consents.version)} / ${date(r.consents.at)}<br>정보 처리: 동의 · 음성 처리: ${r.consents.voice?'동의':'미동의'} · 원본 보관: ${r.consents.retainAudio?'동의':'미동의'}</p></details>${r.visitType==='return'?`<div class="info-box">${esc(r.pet.history)}<br>인투벳 GE 연결 없음 · 보호자 보고와 별도 확인</div>`:''}${r.audioDeletionPending?'<div class="audio-box"><p>재생을 차단했습니다. 원본 삭제를 다시 시도해 주세요.</p><button class="text-btn" data-action="delete-audio">음성 삭제 다시 시도</button></div>':r.audioAvailable?`<div class="audio-box"><p>선택 동의한 원본 · ${date(r.audioExpiresAt)} 재생 만료</p><button class="secondary compact" data-action="play-audio">음성 대조하기</button><button class="text-btn" data-action="delete-audio">원본 즉시 삭제</button><p id="audio-status" class="small" role="status"></p><div id="audio-player"></div></div>`:'<p class="muted small">보관 중인 음성 원본 없음</p>'}</article><article class="draft-pane"><div class="pane-title"><h3>문진 요약 초안</h3><span class="pill green">결정적 규칙 엔진</span></div><div class="missing-box"><b>누락·불확실 정보</b><p>${r.draft.missing.length?r.draft.missing.map(esc).join(' · '):'추가 문진으로 재확인 필요'}</p></div><div class="tabs document-tabs"><button class="${activeRecordTab==='hpi'?'active':''}" data-doc="hpi" aria-pressed="${activeRecordTab==='hpi'}">HPI</button><button class="${activeRecordTab==='soapS'?'active':''}" data-doc="soapS" aria-pressed="${activeRecordTab==='soapS'}">SOAP · S</button></div><label class="sr-only" for="review-hpi">HPI 수정</label><textarea id="review-hpi" class="document-editor ${activeRecordTab!=='hpi'?'hidden':''}" rows="18" maxlength="14000">${esc(r.working?.hpi??r.review?.hpi??r.draft.hpi)}</textarea><label class="sr-only" for="review-soapS">SOAP S 수정</label><textarea id="review-soapS" class="document-editor ${activeRecordTab!=='soapS'?'hidden':''}" rows="18" maxlength="15000">${esc(r.working?.soapS??r.review?.soapS??r.draft.soapS)}</textarea>${cloud&&reviewEdits.has(r.id)?`<details class="review-details"><summary>현재 저장본 확인 · 내 수정은 입력란에 유지</summary><p>HPI</p><pre class="source-text">${esc(r.review?.hpi??r.draft.hpi)}</pre><p>SOAP S</p><pre class="source-text">${esc(r.review?.soapS??r.draft.soapS)}</pre></details>`: ''}<p class="small muted">보호자 진술을 구조화한 초안입니다. O·A·P, 진단, 처방은 생성하지 않습니다. HPI와 SOAP S는 각각 확인해 주세요.</p><label for="review-note" class="field-title">검토 메모 / 보류 사유</label><textarea id="review-note" rows="2" maxlength="1000" placeholder="보류 시 사유를 입력하세요.">${esc(r.working?.note??r.review?.note??'')}</textarea></article></div><div class="review-approval"><div><label class="checkbox"><input id="source-confirmed" type="checkbox"><span>원문·누락정보와 HPI·SOAP S를 모두 대조했습니다.</span></label>${r.draft.flags.length?'<label class="checkbox"><input id="risk-confirmed" type="checkbox"><span>위험 후보와 현재 상태를 확인하고 연락·내원 필요성을 직접 판단했습니다.</span></label>':''}</div><div class="button-row"><button class="secondary" data-action="hold">보류하기</button><button class="primary" data-action="approve">${icon('check')}수정 내용 승인</button></div></div><div class="export-bar"><span>${r.status==='approved'?`수의사 승인본 · ${date(r.review.at)}`:'승인 전 · EMR 전달 잠금'}</span><div class="button-row"><button class="secondary compact" data-export="hpi" ${r.status!=='approved'?'disabled':''}>${icon('copy')}HPI 복사</button><button class="secondary compact" data-export="soapS" ${r.status!=='approved'?'disabled':''}>${icon('copy')}SOAP S 복사</button></div></div><div id="copy-fallback"></div><button class="text-btn delete-link" data-action="delete-record">이 가상 문진과 음성 삭제</button></section>`;}
+  return `<section class="card review-panel" id="review-panel"><div class="review-header"><div><span class="eyebrow">수의사 검토</span><h2 tabindex="-1">${esc(r.pet.name)} <span class="status ${r.status}">${statusLabel(r.status)}</span></h2><p>${r.id.slice(0,8).toUpperCase()} · ${date(r.createdAt)} · 문서 버전 ${r.version}</p></div><div class="button-row review-actions">${cloud?`<button class="secondary compact" data-open="${esc(r.id)}">최신 기록 다시 열기</button>`:''}<button class="secondary compact" data-action="close-review">검토창 닫기</button></div></div>${r.draft.flags.length?`<div class="risk-banner">${icon('alert')}<div><b>위험 후보 ${r.draft.flags.length}건 · 직접 확인이 필요합니다.</b><ul>${r.draft.flags.map(f=>`<li>${esc(f.label)} <small>· ${esc(f.source)}</small></li>`).join('')}</ul><small>과거·부정 표현을 자동으로 배제하지 않습니다. 현재 상태와 연락 필요성을 직접 판단하세요.</small></div></div>`:'<p class="info-box">위험 징후가 체크되지 않았어도 응급 상태 배제를 뜻하지 않습니다.</p>'}<div class="clinical-strip"><div><strong>문제목록 · 보호자 표현</strong><p>${esc(r.draft.problems.join('\n'))}</p></div><div><strong>시간 흐름</strong>${r.draft.timeline.map(t=>`<p>${esc(t.label)}: ${esc(t.text)}</p>`).join('')}</div><div><strong>약물 · 기왕력</strong><p>복용약: ${esc(r.draft.meds)}<br>병력: ${esc(r.draft.history)}</p></div></div><div class="parallel"><article class="source-pane"><div class="pane-title"><h3>보호자 원문</h3><span class="pill">수정 불가</span></div><p class="source-label">주호소</p><p class="source-text">${esc(r.complaint)}</p>${intakeQuestions(r).map(q=>`<div class="source-answer"><b>${esc(q.label)}</b><p>${esc(displayAnswer(q))}</p></div>`).join('')}<details><summary>위험 체크 · 동의 내역 확인</summary><ul>${RISKS.map(risk=>`<li>${esc(risk.label)}: ${esc({yes:'예',no:'아니요',unsure:'모름'}[r.risks[risk.id]])}</li>`).join('')}</ul><p>동의 ${esc(r.consents.version)} / ${date(r.consents.at)}<br>정보 처리: 동의 · 음성 처리: ${r.consents.voice?'동의':'미동의'} · 원본 보관: ${r.consents.retainAudio?'동의':'미동의'}</p></details>${r.visitType==='return'?`<div class="info-box">${esc(r.pet.history)}<br>인투벳 GE 연결 없음 · 보호자 보고와 별도 확인</div>`:''}${r.audioDeletionPending?'<div class="audio-box"><p>재생을 차단했습니다. 원본 삭제를 다시 시도해 주세요.</p><button class="text-btn" data-action="delete-audio">음성 삭제 다시 시도</button></div>':r.audioAvailable?`<div class="audio-box"><p>선택 동의한 원본 · ${date(r.audioExpiresAt)} 재생 만료</p><button class="secondary compact" data-action="play-audio">음성 대조하기</button><button class="text-btn" data-action="delete-audio">원본 즉시 삭제</button><p id="audio-status" class="small" role="status"></p><div id="audio-player"></div></div>`:'<p class="muted small">보관 중인 음성 원본 없음</p>'}</article><article class="draft-pane"><div class="pane-title"><h3>문진 요약 초안</h3><span class="pill green">결정적 규칙 엔진</span></div><div class="missing-box"><b>누락·불확실 정보</b><p>${r.draft.missing.length?r.draft.missing.map(esc).join(' · '):'추가 문진으로 재확인 필요'}</p></div><div class="tabs document-tabs"><button class="${activeRecordTab==='hpi'?'active':''}" data-doc="hpi" aria-pressed="${activeRecordTab==='hpi'}">HPI</button><button class="${activeRecordTab==='soapS'?'active':''}" data-doc="soapS" aria-pressed="${activeRecordTab==='soapS'}">SOAP · S</button></div><label class="sr-only" for="review-hpi">HPI 수정</label><textarea id="review-hpi" class="document-editor ${activeRecordTab!=='hpi'?'hidden':''}" rows="18" maxlength="14000">${esc(r.working?.hpi??r.review?.hpi??r.draft.hpi)}</textarea><label class="sr-only" for="review-soapS">SOAP S 수정</label><textarea id="review-soapS" class="document-editor ${activeRecordTab!=='soapS'?'hidden':''}" rows="18" maxlength="15000">${esc(r.working?.soapS??r.review?.soapS??r.draft.soapS)}</textarea>${cloud&&reviewEdits.has(r.id)?`<details class="review-details"><summary>현재 저장본 확인 · 내 수정은 입력란에 유지</summary><p>HPI</p><pre class="source-text">${esc(r.review?.hpi??r.draft.hpi)}</pre><p>SOAP S</p><pre class="source-text">${esc(r.review?.soapS??r.draft.soapS)}</pre></details>`: ''}<p class="small muted">보호자 진술을 구조화한 초안입니다. O·A·P, 진단, 처방은 생성하지 않습니다. HPI와 SOAP S는 각각 확인해 주세요.</p><label for="review-note" class="field-title">검토 메모 / 보류 사유</label><textarea id="review-note" rows="2" maxlength="1000" placeholder="보류 시 사유를 입력하세요.">${esc(r.working?.note??r.review?.note??'')}</textarea></article></div><div class="review-approval"><div><label class="checkbox"><input id="source-confirmed" type="checkbox"><span>원문·누락정보와 HPI·SOAP S를 모두 대조했습니다.</span></label>${r.draft.flags.length?'<label class="checkbox"><input id="risk-confirmed" type="checkbox"><span>위험 후보와 현재 상태를 확인하고 연락·내원 필요성을 직접 판단했습니다.</span></label>':''}</div><div class="button-row"><button class="secondary" data-action="hold">보류하기</button><button class="primary" data-action="approve">${icon('check')}수정 내용 승인</button></div></div><div class="export-bar"><span>${r.status==='approved'?`수의사 승인본 · ${date(r.review.at)}`:'승인 전 · EMR 전달 잠금'}</span><div class="button-row"><button class="secondary compact" data-export="hpi" ${r.status!=='approved'?'disabled':''}>${icon('copy')}HPI 복사</button><button class="secondary compact" data-export="soapS" ${r.status!=='approved'?'disabled':''}>${icon('copy')}SOAP S 복사</button></div></div><div id="copy-fallback"></div><button class="text-btn delete-link" data-action="delete-record">이 가상 문진과 음성 삭제</button></section>`;}
 function render(){ document.querySelector('dialog[aria-label="문진 대화"]')?.close(); clearPlayback(); $('#app').innerHTML=header()+(view==='guardian'?guardian():clinician())+(view==='guardian' && session.role==='guardian' && guardianChat && !receipt ? `<div class="button-row">${chatButton(guardianChat,'이전 문진 대화 열기')}</div>` : '')+foot(); showSubmissionConflict(); }
 function top(){window.scrollTo({top:0,behavior:'smooth'});$('main h1')?.focus({preventScroll:true});}
 async function refresh(){items=(await api('/api/intakes')).items;}
@@ -277,7 +310,10 @@ async function startVoice(){
     r.start();voiceTimer=setTimeout(async()=>{await stopVoice();if(signal?.aborted)return;render();toast('60초 입력을 마쳤습니다. 인식된 내용을 확인해 주세요.');},60000);render();
   } catch(e){if(signal?.aborted)return;await stopVoice();if(signal?.aborted)return;render();toast(e.message||'마이크 사용에 실패했습니다. 텍스트로 이어가 주세요.',true);}
 }
-function updateLive(){if($('#live-risk'))$('#live-risk').innerHTML=liveRisk();if($('#char-count'))$('#char-count').textContent=`${form.complaint.length}/3,000`;}
+function updateLive(field){
+  const id=field?.dataset.current || field?.dataset.candidate || field?.dataset.edit;
+  const answers=id ? {...form.answers,[id]:field.value} : form.answers;
+  if($('#live-risk'))$('#live-risk').innerHTML=liveRisk(answers);if($('#char-count'))$('#char-count').textContent=`${form.complaint.length}/3,000`;}
 function syncReview(){
   if(!selected||!$('#review-hpi'))return;
   const working={hpi:$('#review-hpi').value,soapS:$('#review-soapS').value,note:$('#review-note').value};
@@ -320,8 +356,34 @@ async function exportRecord(kind){
 async function next(){
   const signal=cloudRequests?.signal;
   if(step===0){if(!form.synthetic||!form.consents.privacy)throw new Error('가상 정보 사용 확인과 필수 정보 처리 동의가 필요합니다.');}
-  if(step===1){await stopVoice();if(signal?.aborted)return;if(!form.complaint.trim()){$('#complaint').focus();throw new Error('증상을 말하거나 직접 입력해 주세요.');}const allowed=new Set(questions(form.category,form.complaint,form.visitType,form.answers).map(q=>q.id));form.answers=Object.fromEntries(Object.entries(form.answers).filter(([k])=>allowed.has(k)));}
-  if(step===2){const empty=questions(form.category,form.complaint,form.visitType,form.answers).find(q=>!form.answers[q.id]?.trim());if(empty){if(!$(`#q-${empty.id}`)){render();toast('답변 내용에 따라 후속 질문을 추가했습니다.');}$(`#q-${empty.id}`)?.focus();throw new Error('모든 질문에 답해 주세요. 모르면 “모름”이라고 적을 수 있습니다.');}}
+  if(step===1){
+    await stopVoice();
+    if(signal?.aborted)return;
+    if(!form.complaint.trim()){$('#complaint').focus();throw new Error('증상을 말하거나 직접 입력해 주세요.');}
+    if(!form.categories.length) form.categories=[suggestedCategory(form.complaint)];
+    form.category=form.categories[0];
+    const slots = intakeQuestions(form);
+    const previous = form.reviewedSource;
+    const allowed = new Set(slots.filter(slot => !previous ||
+      previous[slot.id] === (slot.candidate?.value ?? '')).map(slot => slot.id));
+    form.answers = Object.fromEntries(Object.entries(form.answers).filter(([id]) => allowed.has(id)));
+    form.corrections = form.corrections.filter(id => allowed.has(id));
+    form.clarifying = (form.clarifying ?? []).filter(id => allowed.has(id));
+    form.skippedCandidates = (form.skippedCandidates ?? []).filter(id => allowed.has(id));
+    form.reviewedSource = Object.fromEntries(slots.map(slot => [slot.id,slot.candidate?.value ?? '']));
+  }
+  if(step===2){
+    const slots = intakeQuestions(form);
+    if(slots.some(slot => slot.dateConflict)) throw new Error('같은 증상의 관찰일이 겹칩니다. 확인한 답변에서 관찰 시점을 다시 확인해 주세요.');
+    if($('[data-action="confirm-candidates"]') && slots.some(slot => slot.required && !slot.answer && slot.candidate)){
+      $('[data-action="confirm-candidates"]').focus();
+      throw new Error('답변 후보를 확인해 주세요.');
+    }
+    if(slots.some(slot => slot.required && !slot.answer)){
+      $('[data-current]')?.focus();
+      throw new Error('필수 질문에 답해 주세요.');
+    }
+  }
   if(step===3){
     const unanswered=RISKS.find(r=>!form.risks[r.id]);
     if(unanswered){
@@ -334,13 +396,15 @@ async function next(){
     }
     busy=true;
     try {
-      const payload={...structuredClone(form),finalConfirm:true};
+      const {reviewedSource,clarifying,optionalQuestion,skippedCandidates,...payload}=structuredClone(form);
+      payload.finalConfirm=true;
       if(form.consents.retainAudio&&audioBlob){
         const bytes=new Uint8Array(await audioBlob.arrayBuffer());
         let binary='';
         for(const byte of bytes)binary+=String.fromCharCode(byte);
         payload.audio={type:audioBlob.type,base64:btoa(binary)};
       }
+      if (signal?.aborted) return;
       if (cloud) submission ??= { id: crypto.randomUUID() };
       receipt=await api('/api/intakes',{method:'POST',body:payload,
         headers:cloud?{'Idempotency-Key':submission.id}:undefined});
@@ -356,7 +420,7 @@ async function next(){
   }
   step++;render();top();
 }
-$('#app').addEventListener('input',e=>{const t=e.target;if(['review-hpi','review-soapS','review-note'].includes(t.id))syncReview();if(t.name==='complaint'){form.complaint=t.value;updateLive();}if(t.dataset.answer){form.answers[t.dataset.answer]=t.value;updateLive();}if(t.id==='search'){query=t.value;$('#table-container').innerHTML=table();}});
+$('#app').addEventListener('input',e=>{const t=e.target;if(['review-hpi','review-soapS','review-note'].includes(t.id))syncReview();if(t.name==='complaint'){form.complaint=t.value;updateLive();}if(t.dataset.current || t.dataset.candidate || t.dataset.edit)updateLive(t);if(t.id==='search'){query=t.value;$('#table-container').innerHTML=table();}});
 $('#app').addEventListener('change',async e=>{const t=e.target;if(['petId','visitType'].includes(t.name)){form[t.name]=t.value;render();}if(t.name==='synthetic')form.synthetic=t.checked;if(['privacy','voice','retainAudio'].includes(t.name)){form.consents[t.name]=t.checked;if(!form.consents.voice){form.consents.retainAudio=false;await stopVoice();audioBlob=null;}if(t.name==='retainAudio'&&!t.checked){await stopVoice();audioBlob=null;}render();$(`input[name="${t.name}"]`)?.focus();}if(t.name.startsWith('risk-')){
   form.risks[t.name.slice(5)]=t.value;
   for(const input of t.closest('fieldset').querySelectorAll('input')){
@@ -401,7 +465,25 @@ $('#app').addEventListener('click',async e=>{
   const signal=cloudRequests?.signal;
   if(cloud)cloudActionPending=true;
   try {
-    if(button.dataset.category){form.category=button.dataset.category;render();return;}
+    if(button.dataset.category){
+      const id = button.dataset.category;
+      if(!form.categories.includes(id)) form.categories.push(id);
+      else form.categories = form.categories.filter(category => category !== id);
+      form.symptomSelections=form.symptomSelections.filter(symptom=>
+        SELECTABLE_SYMPTOMS.some(item=>item.id===symptom && form.categories.includes(item.category)));
+      form.category = form.categories[0] ?? suggestedCategory(form.complaint);
+      render();return;
+    }
+    if(button.dataset.symptom){
+      const id=button.dataset.symptom;
+      form.symptomSelections=form.symptomSelections.includes(id)
+        ? form.symptomSelections.filter(symptom=>symptom!==id) : [...form.symptomSelections,id];
+      render();$('[data-symptom="'+id+'"]').focus();return;
+    }
+    if(button.dataset.optional){
+      form.optionalQuestion=button.dataset.optional;
+      render();$('[data-current]').focus();return;
+    }
     if(button.dataset.filter){filter=button.dataset.filter;render();return;}
     if(button.dataset.chat){await openChat(button.dataset.chat);return;}
     if(button.dataset.open){
@@ -435,7 +517,53 @@ $('#app').addEventListener('click',async e=>{
       toast('녹음을 버렸습니다. 입력한 글은 유지됩니다.');
     }
     if(action==='sample-complaint'){form.complaint='어제 저녁부터 두 번 토했어요. 오늘 아침 사료를 절반 정도 먹었고 평소보다 기운이 조금 없어요.';render();}
-    if(action==='sample-answers'){const defaults={onset:'가상 답변: 어제 오후 8시',course:'가상 답변: 어제 1회, 오늘 아침 1회. 이후 관찰 중',daily:'가상 답변: 식사 절반, 물과 소변 평소와 비슷함',meds:'없음',history:'모름',vomit:'가상 답변: 노란 액체 2회, 피는 관찰 못함',exposure:'가상 답변: 최근 사료 변경 없음',followup:'가상 답변: 지난 진료와 다른 증상'};for(let pass=0;pass<2;pass++)for(const q of questions(form.category,form.complaint,form.visitType,form.answers))form.answers[q.id]=defaults[q.id]||'모름';render();toast('가상 답변을 채웠습니다. 시험 목적에 맞게 수정해 주세요.');}
+    if(action==='confirm-candidates'||action==='save-edits'){
+      const attribute = action==='confirm-candidates' ? 'candidate' : 'edit';
+      const slots = new Map(intakeQuestions(form).map(slot => [slot.id,slot]));
+      form.clarifying ??= [];
+      for(const field of document.querySelectorAll('[data-'+attribute+']')){
+        const id = field.dataset[attribute];
+        const slot = slots.get(id);
+        if(attribute==='edit' && field.value.trim()===slot.answer) continue;
+        if(attribute==='candidate' && !slot.required && !field.value.trim()){
+          (form.skippedCandidates ??= []).push(id);
+          continue;
+        }
+        const result = resolveQuestionAnswer(field.value.trim() || '모르겠어요',false,false,slot);
+        if(attribute==='edit' && !form.corrections.includes(id)) form.corrections.push(id);
+        if(result.clarify){
+          delete form.answers[id];
+          if(!form.clarifying.includes(id)) form.clarifying.push(id);
+        }else form.answers[id] = result.answer;
+      }
+      for(const slot of intakeQuestions(form)){
+        if(!slot.answer || !slot.period || !slot.id.includes('-count') ||
+          !resolveQuestionAnswer(slot.answer,false,false,slot).clarify) continue;
+        delete form.answers[slot.id];
+        if(!form.clarifying.includes(slot.id)) form.clarifying.push(slot.id);
+      }
+      render();top();
+    }
+    if(action==='save-answer'||action==='unknown-answer'){
+      const field = $('[data-current]');
+      const id = field.dataset.current;
+      if(action==='save-answer' && !field.value.trim()){field.focus();throw new Error('답변을 입력해 주세요.');}
+      const slot = intakeQuestions(form).find(slot => slot.id === id);
+      form.clarifying ??= [];
+      const result = resolveQuestionAnswer(field.value,form.clarifying.includes(id),action==='unknown-answer',slot);
+      form.clarifying = form.clarifying.filter(item => item !== id);
+      if(result.clarify) form.clarifying.unshift(id);
+      if(!result.clarify){form.answers[id] = result.answer;form.optionalQuestion=null;}
+      render();
+      if(result.clarify) $('[data-current]').focus();else top();
+    }
+    if(action==='sample-answers'){
+      form.clarifying = [];
+      for(const slot of intakeQuestions(form)){
+        if(!slot.answer && (slot.required || slot.candidate)) form.answers[slot.id]=slot.candidate?.value ?? '모름';
+      }
+      render();toast('가상 답변을 채웠습니다. 시험 목적에 맞게 수정해 주세요.');
+    }
     if(action==='contact'){const dialog=document.createElement('dialog');dialog.className='contact-dialog';dialog.innerHTML=`<h2>문진보다 연락이 먼저예요.</h2>${contact()}<p>${esc(SAFETY)}</p><form method="dialog"><button class="primary">안내 확인</button></form>`;document.body.append(dialog);dialog.addEventListener('close',()=>dialog.remove());dialog.showModal();}
     if(action==='new'){submission=null;guardianChat=null;form=blank();receipt=null;step=0;audioBlob=null;render();top();}
     if(action==='refresh'){

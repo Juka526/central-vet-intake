@@ -115,6 +115,9 @@ export function createVisitsHandler({ store, audio, cleanupSubject, cleanupAudie
         Object.entries(record.answers).sort(), record.risks, consents.version, consents.voice];
       // Preserve replay compatibility for text submissions made before audio was supported.
       if (consents.retainAudio) fingerprintInput.push(true, bytes ? [b.audio.type, hash(bytes)] : null);
+      if (record.questionVersion !== undefined) fingerprintInput.push([
+        record.questionVersion, [...record.categories].sort(), [...record.symptomSelections].sort(), [...record.corrections].sort(),
+      ]);
       const fingerprint = hash(JSON.stringify(fingerprintInput));
       let original;
       const expiredSubmission = { status: 409, body: { error: '이미 사용한 접수 식별자입니다.' } };
