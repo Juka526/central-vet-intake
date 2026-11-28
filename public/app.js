@@ -374,6 +374,7 @@ async function next(){
   }
   if(step===2){
     const slots = intakeQuestions(form);
+    if(slots.some(slot => slot.dateConflict)) throw new Error('같은 증상의 관찰일이 겹칩니다. 확인한 답변에서 관찰 시점을 다시 확인해 주세요.');
     if($('[data-action="confirm-candidates"]') && slots.some(slot => slot.required && !slot.answer && slot.candidate)){
       $('[data-action="confirm-candidates"]').focus();
       throw new Error('답변 후보를 확인해 주세요.');
@@ -534,6 +535,12 @@ $('#app').addEventListener('click',async e=>{
           delete form.answers[id];
           if(!form.clarifying.includes(id)) form.clarifying.push(id);
         }else form.answers[id] = result.answer;
+      }
+      for(const slot of intakeQuestions(form)){
+        if(!slot.answer || !slot.period || !slot.id.includes('-count') ||
+          !resolveQuestionAnswer(slot.answer,false,false,slot).clarify) continue;
+        delete form.answers[slot.id];
+        if(!form.clarifying.includes(slot.id)) form.clarifying.push(slot.id);
       }
       render();top();
     }

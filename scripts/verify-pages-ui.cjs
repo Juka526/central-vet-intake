@@ -371,6 +371,20 @@ async function run() {
 
     await page.reload();
     await startLeo();
+    await page.locator('#complaint').fill('어제 처음 토했어요. 어제 두 번 토했어요. 사료를 절반만 먹었어요.');
+    await action('next');
+    await page.getByLabel('구토 관찰 시점 · 어제', {exact:false}).fill('오늘');
+    await action('confirm-candidates');
+    await page.getByText('확인한 답변 수정', {exact:true}).click();
+    assert.equal(await page.getByLabel('오늘 몇 번 토했나요?', {exact:true}).inputValue(),'2회');
+    assert.equal(await page.getByLabel('어제 몇 번 토했나요?', {exact:true}).count(),0);
+    await action('next');
+    await submit();
+    await openReview();
+    assert.match(await page.locator('#review-hpi').inputValue(), /오늘 몇 번 토했나요\? 2회/u);
+
+    await page.reload();
+    await startLeo();
     await page.locator('#complaint').fill('어제 한 번 토했어요. 오늘 또 한 번. 밥은 평소와 같아요.');
     await action('next');
     for (const day of ['어제','오늘']) {

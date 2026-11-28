@@ -1607,3 +1607,45 @@ test('평소와 같다는 식사량을 후보에서 확인하면 다시 묻지 �
       .find(slot => slot.id === 'meal').candidate, null);
   }
 });
+
+test('조사가 붙은 구토와 나란한 시간대는 필요한 날짜별 횟수를 생성한다', () => {
+  const cases = [
+    ['어제부터 두 번 토했어요. 오늘 토를 세 번 했어요.', [['','2회'],['오늘','3회']]],
+    ['어제 처음 한 번 토했어요. 오늘 아침이랑 저녁에 토했어요.', [
+      ['어제','1회'],['오늘 아침',''],['오늘 저녁',''],
+    ]],
+  ];
+  for (const [source,expected] of cases) {
+    const input = confirm(intake(source+' 사료를 절반만 먹었어요.'));
+    const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+    assert.deepEqual(counts.map(({period,answer}) => [period || '',answer]),expected);
+    for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+    for (const slot of counts) {
+      const answers = {...input.answers};
+      delete answers[slot.id];
+      assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+    }
+    assert.ok(pages('/api/intakes',{method:'POST',body:input}).id);
+  }
+});
+
+test('관찰 시점을 정정하면 연결된 횟수도 새 날짜에 표시하고 충돌은 접수를 막는다', () => {
+  const input = confirm(intake('어제 처음 토했어요. 어제 두 번 토했어요. 사료를 절반만 먹었어요.'));
+  const slots = intakeQuestions(input);
+  const observation = slots.find(slot => slot.id.includes('-seen-'));
+  const count = slots.find(slot => slot.id.includes('-count'));
+  input.answers[observation.id] = '오늘';
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const {timeline} = readPagesDraft(id);
+  assert.ok(timeline.some(item => item.label === '구토 관찰 시점 · 오늘' && item.text === '오늘 (보호자 정정)'));
+  assert.ok(timeline.some(item => item.label === '오늘 몇 번 토했나요?' && item.text === '2회'));
+  assert.ok(!timeline.some(item => item.label === '어제 몇 번 토했나요?'));
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers:{
+    ...input.answers,[count.id]:'어제 두 번 토했어요.',
+  }}}), /횟수 후속 질문/);
+
+  const conflicting = confirm(intake('어제 처음 두 번 토했어요. 오늘 한 번 토했어요. 사료를 절반만 먹었어요.'));
+  const old = intakeQuestions(conflicting).find(slot => slot.label === '구토 관찰 시점 · 어제');
+  conflicting.answers[old.id] = '오늘';
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:conflicting}), /관찰일이 겹칩니다/);
+});
