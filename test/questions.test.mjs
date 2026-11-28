@@ -1680,3 +1680,42 @@ test('재진에서 날짜를 붙여 보고한 구토 감소는 경과로 확인�
   const {id} = pages('/api/intakes',{method:'POST',body:input});
   assert.ok(readPagesDraft(id).timeline.some(item => item.label === course[0].label && item.text === '줄었어요'));
 });
+
+for (const [complaint,hasDiarrhea] of [
+  ['어제부터 구토했어요. 어제 두 번 토했고, 오늘은 토와 설사를 했어요. 밥은 절반 먹었어요.',true],
+  ['어제부터 토했어요. 어제 두 번 토했고 오늘은 설사는 안 했지만 토했어요. 밥은 절반 먹었어요.',false],
+  ['어제부터 토했어요. 어제 두 번 토했고 오늘 다시 토한 다음 설사를 했어요. 밥은 절반 먹었어요.',true],
+]) {
+  test('복합 진술의 오늘 횟수를 각각 확인한다 · '+complaint, () => {
+    const input = confirm(intake(complaint));
+    const expected = ['오늘 몇 번 토했나요?', ...(hasDiarrhea ? ['오늘 설사가 몇 번 있었나요?'] : [])];
+    assert.deepEqual(remaining(input).filter(slot => slot.id.includes('-count')).map(slot => slot.label), expected);
+    for (const slot of remaining(input)) {
+      const value = slot.id.startsWith('vomit-count') ? '1회' : slot.id.startsWith('diarrhea-count') ? '3회' : '오늘';
+      const resolved = resolveQuestionAnswer(value,false,false,slot);
+      assert.equal(resolved.clarify,false,slot.label);
+      input.answers[slot.id] = resolved.answer;
+    }
+    assert.deepEqual(remaining(input),[]);
+    const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+    for (const {id} of counts) {
+      const answers = {...input.answers};
+      delete answers[id];
+      assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+    }
+    const {id} = pages('/api/intakes',{method:'POST',body:input});
+    const result = readPagesDraft(id);
+    assert.ok(result.hpi.includes(complaint));
+    assert.deepEqual(result.timeline.filter(item => item.label.includes('몇 번')), [
+      {label:'어제 몇 번 토했나요?',text:'2회'},
+      ...expected.map((label,index) => ({label,text:index === 0 ? '1회' : '3회'})),
+    ]);
+  });
+}
+
+test('기존에 날짜 없이 저장한 설사 횟수는 검토 화면에서 읽을 수 있다', () => {
+  const input = intake('어제부터 토했어요. 어제 두 번 토했고 오늘 다시 토한 다음 설사를 했어요. 밥은 절반 먹었어요.', {
+    draft:{}, answers:{'diarrhea-count':'3회'},
+  });
+  assert.ok(draft(input).timeline.some(item => item.label === '이번에 설사가 몇 번 있었나요?' && item.text === '3회'));
+});
