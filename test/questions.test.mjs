@@ -1649,3 +1649,34 @@ test('관찰 시점을 정정하면 연결된 횟수도 새 날짜에 표시하�
   conflicting.answers[old.id] = '오늘';
   assert.throws(() => pages('/api/intakes',{method:'POST',body:conflicting}), /관찰일이 겹칩니다/);
 });
+
+test('두 번이고로 연결한 날짜별 구토 횟수는 Pages 접수에 각각 필요하다', () => {
+  const input = confirm(intake('어제부터 토했어요. 어제 두 번이고 오늘은 세 번 토했어요. 밥은 평소의 절반만 먹었어요.'));
+  const counts = intakeQuestions(input).filter(slot => slot.id.includes('-count'));
+  assert.deepEqual(counts.map(({period,answer,required}) => [period,answer,required]), [
+    ['어제','2회',true], ['오늘','3회',true],
+  ]);
+  for (const {id} of counts) {
+    const answers = {...input.answers};
+    delete answers[id];
+    assert.throws(() => pages('/api/intakes',{method:'POST',body:{...input,answers}}), /후속 질문/);
+  }
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.deepEqual(readPagesDraft(id).timeline.filter(item => item.label.includes('몇 번')), [
+    {label:'어제 몇 번 토했나요?',text:'2회'}, {label:'오늘 몇 번 토했나요?',text:'3회'},
+  ]);
+});
+
+test('재진에서 날짜를 붙여 보고한 구토 감소는 경과로 확인한다', () => {
+  const input = confirm(intake('어제부터 토했어요. 오늘 구토가 줄었어요.', {visitType:'return'}));
+  const slots = intakeQuestions(input);
+  const course = slots.filter(slot => slot.id.startsWith('vomit-course'));
+  assert.deepEqual(course.map(({label,answer,status}) => [label,answer,status]), [
+    ['오늘 구토 경과는 어떻게 달라졌나요?','줄었어요','confirmed'],
+  ]);
+  assert.deepEqual(slots.filter(slot => slot.id.includes('-count')).map(slot => slot.label), ['이번에 몇 번 토했나요?']);
+  assert.ok(!slots.some(slot => slot.label === '구토 관찰 시점 · 오늘'));
+  for (const slot of remaining(input)) input.answers[slot.id] = '모르겠어요';
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.ok(readPagesDraft(id).timeline.some(item => item.label === course[0].label && item.text === '줄었어요'));
+});
