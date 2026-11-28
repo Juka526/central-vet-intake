@@ -1517,3 +1517,34 @@ test('같은 날짜의 나란한 횟수는 각각 증상에 연결하고 Pages�
     ]);
   }
 });
+
+test('요일별 구토 관찰과 시작을 구분하고 수요일 횟수 없이 Pages 접수를 거부한다', () => {
+  const input = confirm(intake('월요일부터 토했어요. 화요일에 두 번 토했어요. 수요일에도 토했어요. 밥은 절반만 먹었어요.'));
+  assert.equal(input.answers['vomit-onset'], '월요일');
+  const counts = intakeQuestions(input).filter(slot => slot.id.startsWith('vomit-count'));
+  assert.deepEqual(counts.map(({period,answer,required}) => [period,answer,required]), [
+    ['화요일','2회',true], ['수요일','',true],
+  ]);
+  assert.throws(() => pages('/api/intakes',{method:'POST',body:input}), /후속 질문/);
+  input.answers[counts[1].id] = '모르겠어요';
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  const {timeline} = readPagesDraft(id);
+  for (const {period} of counts) {
+    assert.ok(timeline.some(item => item.label === '구토 관찰 시점 · '+period && item.text === period));
+  }
+  assert.ok(timeline.some(item => item.label === counts[0].label && item.text === '2회'));
+  assert.ok(timeline.some(item => item.label === counts[1].label && item.text === '미확인 (모르겠어요)'));
+});
+
+test('구토와 설사의 사료 변경은 방문당 한 번 표시하며 확인한 답은 재질문하지 않는다', () => {
+  const input = confirm(intake(dated+' 사료를 바꾸지 않았어요.'));
+  const slots = intakeQuestions(input).filter(slot => slot.id === 'exposure');
+  assert.equal(slots.length, 1);
+  assert.equal(slots[0].required, false);
+  assert.equal(slots[0].status, 'confirmed');
+  assert.match(slots[0].answer, /바꾸지 않았어요/u);
+  const {id} = pages('/api/intakes',{method:'POST',body:input});
+  assert.match(readPagesDraft(id).hpi, /최근 사료를 바꿨나요\? 사료를 바꾸지 않았어요/u);
+  const incomplete = confirm(intake(dated));
+  assert.ok(pages('/api/intakes',{method:'POST',body:incomplete}).id);
+});
